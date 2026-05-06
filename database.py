@@ -1,0 +1,90 @@
+# database.py
+import os
+import mysql.connector
+from mysql.connector import Error
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DB_CONFIG = {
+    'host': os.getenv('DB_HOST', 'localhost'),
+    'user': os.getenv('DB_USER', 'root'),
+    'password': os.getenv('DB_PASSWORD', ''),
+    'database': os.getenv('DB_NAME', 'duoprogram_db'),
+}
+
+def get_db_connection():
+    """Retorna una conexión a la base de datos"""
+    try:
+        connection = mysql.connector.connect(**DB_CONFIG)
+        return connection
+    except Error as e:
+        print(f"Error conectando a MySQL: {e}")
+        return None
+
+def init_db():
+    """Inicializa la base de datos creando las tablas necesarias"""
+    connection = get_db_connection()
+    if not connection:
+        print("No se pudo conectar a la base de datos")
+        return
+    
+    cursor = connection.cursor()
+    
+    # Crear base de datos si no existe
+    cursor.execute(f"CREATE DATABASE IF NOT EXISTS {DB_CONFIG['database']}")
+    cursor.execute(f"USE {DB_CONFIG['database']}")
+    
+    # Crear tabla de usuarios
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            nombre_completo VARCHAR(200) NOT NULL,
+            email VARCHAR(100) UNIQUE NOT NULL,
+            password_hash VARCHAR(255) NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Crear tabla de planes guardados
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS planes (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            usuario_id INT NOT NULL,
+            nombre VARCHAR(120) DEFAULT NULL,
+            programa_principal VARCHAR(10) NOT NULL,
+            programa_secundario VARCHAR(10),
+            semestres_cursados INT,
+            promedio DECIMAL(3,1),
+            materias_aprobadas JSON,
+            homologaciones JSON,
+            plan_generado JSON,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
+        )
+    """)
+
+    # Agregar columna nombre si no existe (para instalaciones previas sin ella)
+    try:
+        cursor.execute("ALTER TABLE planes ADD COLUMN nombre VARCHAR(120) DEFAULT NULL")
+        connection.commit()
+        print("Columna 'nombre' agregada a la tabla planes")
+    except Exception:
+        pass  # La columna ya existe, no hay nada que hacer
+    
+    # Crear tabla de historial
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS historial (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            usuario_id INT NOT NULL,
+            accion VARCHAR(100) NOT NULL,
+            detalles TEXT,
+            fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
+        )
+    """)
+    
+    connection.commit()
+    cursor.close()
+    connection.close()
+    print("Base de datos inicializada correctamente")

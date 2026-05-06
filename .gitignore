@@ -1,0 +1,14 @@
+# Variables de entorno - contiene credenciales, nunca subir
+.env
+
+# Entorno virtual de Python
+venv/
+
+# Archivos compilados de Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Base de datos local
+*.db
+*.sqlite3
