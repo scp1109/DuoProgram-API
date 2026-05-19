@@ -14,7 +14,6 @@ DB_CONFIG = {
 }
 
 def get_db_connection():
-    """Retorna una conexión a la base de datos"""
     try:
         connection = mysql.connector.connect(**DB_CONFIG)
         return connection
@@ -23,7 +22,6 @@ def get_db_connection():
         return None
 
 def init_db():
-    """Inicializa la base de datos creando las tablas necesarias"""
     connection = get_db_connection()
     if not connection:
         print("No se pudo conectar a la base de datos")

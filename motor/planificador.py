@@ -1,5 +1,4 @@
 # ============================================================
-#  motor/planificador.py
 #  Planificador académico doble programa UTB
 #  Algoritmo: Greedy semestre a semestre optimizado para 20 créditos
 # ============================================================
@@ -8,16 +7,16 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 # PROGRAMAS y CODIGOS_INGLES ahora vienen de la BD en lugar de estar hardcodeados
 from data.db_programas import (
-    PROGRAMAS, CODIGOS_INGLES,
+    PROGRAMAS, CODIGOS_INGLES, get_codigos_practica,
 )
-from data.programas import (
-    Programa, Materia, GrupoElectiva, get_codigos_practica,
-)
+# Las clases y constructores vienen de modelos.py (sin datos hardcodeados)
+from data.modelos import Programa, Materia, GrupoElectiva
 
 # ── Constantes ───────────────────────────────────────────────
 CRED_MAX_ALTO = 20   # promedio >= 4.0
 CRED_MAX_BAJO = 18   # promedio <  4.0
-CRED_MIN      = 12   # mínimo por semestre activo
+# Matricula UTB: minimo 0 cr por semestre. No se usa en el greedy actual.
+CRED_MIN      = 0
 
 
 # ── Modelos de entrada/salida ────────────────────────────────
@@ -62,7 +61,7 @@ class SemestrePlan:
     es_ultimo:      bool
 
 
-# ── Función principal ────────────────────────────────────────
+# ----- Función principal ---------------------------------------
 
 def generar_plan(params: ParametrosPlan) -> List[SemestrePlan]:
     prog_p = PROGRAMAS.get(params.codigo_programa_principal)
@@ -101,12 +100,6 @@ def generar_plan(params: ParametrosPlan) -> List[SemestrePlan]:
         prog_p, prog_s, aprobadas, placeholders, params
     )
 
-    print(f"[MOTOR] aprobadas={len(aprobadas)} pendientes={len(pendientes)} "
-          f"placeholders={len(placeholders)}")
-    for tc, n in cubiertas_por_grupo.items():
-        gc = grupos_fusionados[tc]
-        print(f"  [{tc}] cubiertas={n}/{gc.cantidad}")
-
     if not pendientes:
         return []
 
@@ -123,7 +116,7 @@ def generar_plan(params: ParametrosPlan) -> List[SemestrePlan]:
     return plan
 
 
-# ── PASO 1: Cargar aprobadas ─────────────────────────────────
+# --- PASO 1: Cargar aprobadas ----------------------------
 
 def cargar_aprobadas(
     params: ParametrosPlan,
@@ -154,7 +147,7 @@ def cargar_aprobadas(
     return aprobadas
 
 
-# ── PASO 2: Fusionar grupos ──────────────────────────────────
+# --- PASO 2: Fusionar grupos ------------------------------------
 
 @dataclass
 class _GrupoFusionado:
@@ -205,7 +198,7 @@ def fusionar_grupos(
     return resultado
 
 
-# ── PASO 3: Calcular cubiertas por grupo ─────────────────────
+# --- PASO 3: Calcular cubiertas por grupo -------------------
 
 def calcular_electivas_cubiertas(
     grupos: Dict[str, _GrupoFusionado],
@@ -217,27 +210,21 @@ def calcular_electivas_cubiertas(
     cubiertas: Dict[str, int] = {tc: 0 for tc in grupos}
     todas_futuras: Set[str] = aprobadas | pendientes
 
-    print("\n  Calculando electivas cubiertas (incluyendo futuras):")
     for tc, gf in grupos.items():
         contadas: Set[str] = set()
         for cod_opcion in gf.opciones:
             if cod_opcion in aprobadas:
                 contadas.add(cod_opcion)
-                print(f"    ✓ {cod_opcion} (ya aprobada) → cubre {tc}")
             elif prog_s and cod_opcion in prog_s.materias_obligatorias and cod_opcion in todas_futuras:
                 contadas.add(cod_opcion)
-                print(f"    ✓ {cod_opcion} (obligatoria de {prog_s.codigo} por cursar) → cubre {tc}")
             elif cod_opcion in prog_p.materias_obligatorias and cod_opcion in todas_futuras:
                 contadas.add(cod_opcion)
-                print(f"    ✓ {cod_opcion} (obligatoria de {prog_p.codigo} por cursar) → cubre {tc}")
-        
         cubiertas[tc] = min(len(contadas), gf.cantidad)
-        print(f"    Total cubiertas para {tc}: {cubiertas[tc]}/{gf.cantidad}")
 
     return cubiertas
 
 
-# ── PASO 4: Placeholders necesarios ─────────────────────────
+# --- PASO 4: Placeholders necesarios ------------------------
 
 def placeholders_necesarios(
     grupos: Dict[str, _GrupoFusionado],
@@ -250,20 +237,17 @@ def placeholders_necesarios(
         ya_cubiertas = cubiertas_por_grupo.get(tc, 0)
         faltan = gf.cantidad - ya_cubiertas
 
-        print(f"  Grupo {tc}: requiere {gf.cantidad}, cubiertas={ya_cubiertas}, faltan={faltan}")
-
         if faltan <= 0:
             continue
 
         slots_disponibles = [slot for slot in gf.slot_codigos if slot not in aprobadas]
         for slot in slots_disponibles[:faltan]:
             necesarios.add(slot)
-            print(f"    → Slot necesario: {slot}")
 
     return necesarios
 
 
-# ── PASO 5: Materias pendientes ──────────────────────────────
+# --- PASO 5: Materias pendientes ---------------------------------
 
 def materias_pendientes(
     prog_p: Programa,
@@ -314,10 +298,33 @@ def materias_pendientes(
                         prerrequisitos=[],
                     )
 
-    return sorted(pendientes.values(), key=lambda m: (m.nivel, -m.creditos))
+    lista = list(pendientes.values())
+
+    # Reasignar nivel de las lenguas extranjeras pendientes.
+    # Si el estudiante homologo hasta nivel N, la siguiente (N+1) debe
+    # poder cursarse en el primer semestre disponible, no en el nivel
+    # que le corresponde en la malla original.
+    codigos_ingles_set = set(CODIGOS_INGLES)
+    ingles_pendientes = sorted(
+        [m for m in lista if m.codigo in codigos_ingles_set],
+        key=lambda m: CODIGOS_INGLES.index(m.codigo),
+    )
+    if ingles_pendientes:
+        from dataclasses import replace
+        # El primer ingles pendiente arranca en nivel 1 del plan restante;
+        # los siguientes se espacian uno por semestre para respetar la cadena
+        ajustados = {
+            m.codigo: replace(m, nivel=i + 1)
+            for i, m in enumerate(ingles_pendientes)
+        }
+        lista = [
+            ajustados.get(m.codigo, m) for m in lista
+        ]
+
+    return sorted(lista, key=lambda m: (m.nivel, -m.creditos))
 
 
-# ── PASO 6: Planificar semestres OPTIMIZADO ──────────────────
+# --- PASO 6: Planificar semestres OPTIMIZADO --------------------
 
 def planificar_semestres_optimizado(
     pendientes: List[Materia],
@@ -380,9 +387,13 @@ def planificar_semestres_optimizado(
             if usados >= 18:
                 break
 
+        # Se ordena por nivel para que el ingles ajustado (nivel=1) llegue
+        # antes que otras materias de 2cr con nivel mayor (humanidades, etc.)
+        disponibles_2cr_sorted = sorted(disponibles_2cr, key=lambda m: m.nivel)
+
         # FASE 2: Agregar UNA materia de 2 créditos si hay disponible
-        if usados <= 18 and disponibles_2cr:
-            mat_2cr = disponibles_2cr[0]
+        if usados <= 18 and disponibles_2cr_sorted:
+            mat_2cr = disponibles_2cr_sorted[0]
             semestre_mats.append(mat_2cr)
             usados += mat_2cr.creditos
 
@@ -419,7 +430,7 @@ def planificar_semestres_optimizado(
             es_ultimo=False,
         ))
 
-        # Actualizar estado - CORREGIDO: usar mat.codigo como clave
+        # Actualizar estado
         for mat in semestre_mats:
             vistas.add(mat.codigo)
             if mat.codigo in pendientes_set:
@@ -455,7 +466,7 @@ def planificar_semestres_optimizado(
         plan[-1].es_ultimo = True
 
     return plan
-# ── Helpers ──────────────────────────────────────────────────
+# --- Helpers ----------------------------------------------
 
 def prerequisitos_cumplidos(mat: Materia, aprobadas: Set[str]) -> bool:
     return all(prereq in aprobadas for prereq in mat.prerrequisitos)

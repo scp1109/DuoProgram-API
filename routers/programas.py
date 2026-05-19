@@ -1,5 +1,6 @@
 # routers/programas.py
-# Endpoints para consultar programas y mallas desde la base de datos.
+# Endpoints para consultar programas(/programas) 
+# y mallas desde la base de datos (/programas/{codigo}).
 # Reemplaza la lectura directa de data/programas.py en memoria.
 
 from fastapi import APIRouter, HTTPException
@@ -40,7 +41,11 @@ def listar_programas():
                      FROM grupos_electivas ge
                      WHERE ge.programa_codigo = p.codigo), 0
                 )                                                    AS creditos_electivos,
-                COUNT(pm.materia_codigo)                             AS total_materias
+                COUNT(pm.materia_codigo)                             AS total_materias,
+                -- Se agrega total_semestres para que Flutter muestre
+                -- el numero correcto por programa (CDAT=9, IMEC=10, etc.)
+                -- en vez de hardcodear 10 para todos
+                COALESCE(MAX(pm.nivel), 0)                           AS total_semestres
             FROM programas p
             LEFT JOIN programa_materia pm ON pm.programa_codigo = p.codigo
             LEFT JOIN materias m          ON m.codigo = pm.materia_codigo
@@ -53,11 +58,12 @@ def listar_programas():
 
         return {
             row["codigo"]: {
-                "codigo":          row["codigo"],
-                "nombre":          row["nombre"],
-                "facultad":        row["facultad"],
-                "total_creditos":  int(row["creditos_obligatorios"]) + int(row["creditos_electivos"]),
-                "total_materias":  int(row["total_materias"]),
+                "codigo":           row["codigo"],
+                "nombre":           row["nombre"],
+                "facultad":         row["facultad"],
+                "total_creditos":   int(row["creditos_obligatorios"]) + int(row["creditos_electivos"]),
+                "total_materias":   int(row["total_materias"]),
+                "total_semestres":  int(row["total_semestres"]),
             }
             for row in rows
         }

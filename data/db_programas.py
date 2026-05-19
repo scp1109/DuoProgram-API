@@ -3,7 +3,7 @@
 # Carga los datos de programas, materias, prerrequisitos y
 # grupos de electivas desde la base de datos MySQL, y construye
 # los mismos objetos (Programa, Materia, GrupoElectiva) que
-# antes vivian hardcodeados en programas.py.
+# antes estaban hardcodeados en programas.py.
 #
 # El planificador importa de aqui en lugar de programas.py,
 # sin necesitar ningun otro cambio en el motor.
@@ -11,10 +11,10 @@
 
 from typing import Dict, List, Optional, Set
 from database import get_db_connection
-from data.programas import Materia, GrupoElectiva, Programa
+from data.modelos import Materia, GrupoElectiva, Programa
 
 
-# ── Funciones de carga desde BD ──────────────────────────────
+# ----- Funciones de carga desde BD -----------------------------
 
 def _cargar_prerrequisitos(cursor, programa_codigo: str) -> Dict[str, List[str]]:
     """Retorna {materia_codigo: [prereq1, prereq2, ...]} para un programa."""
@@ -137,9 +137,9 @@ def _cargar_programa(cursor, codigo: str) -> Optional[Programa]:
     )
 
 
-# ── Carga global al importar el módulo ───────────────────────
+# ---- Carga global al importar el módulo -----------------------
 # Se conecta una sola vez y deja los objetos en memoria,
-# igual que antes con programas.py pero alimentado desde la BD.
+# igual que antes con programas.py pero directamente desde la BD.
 
 def _cargar_todos() -> Dict[str, Programa]:
     conn = get_db_connection()
@@ -152,9 +152,15 @@ def _cargar_todos() -> Dict[str, Programa]:
     cursor = conn.cursor(dictionary=True)  # type: ignore[call-overload]
     try:
         cursor.execute("SELECT codigo FROM programas")
-        codigos = [r["codigo"] for r in cursor.fetchall()]
-        return {cod: _cargar_programa(cursor, cod) for cod in codigos
-                if _cargar_programa(cursor, cod) is not None}
+        rows: list[dict] = cursor.fetchall()  # type: ignore[assignment]
+        codigos = [r["codigo"] for r in rows]
+        # Se filtra None explicitamente; la comprension de dict no convence a Pylance
+        resultado: Dict[str, Programa] = {}
+        for cod in codigos:
+            prog = _cargar_programa(cursor, cod)
+            if prog is not None:
+                resultado[cod] = prog
+        return resultado
     finally:
         cursor.close()
         conn.close()
@@ -169,13 +175,14 @@ def _cargar_codigos_ingles() -> List[str]:
         cursor.execute(
             "SELECT materia_codigo FROM codigos_ingles ORDER BY nivel_ingles"
         )
-        return [r["materia_codigo"] for r in cursor.fetchall()]
+        rows: list[dict] = cursor.fetchall()  # type: ignore[assignment]
+        return [r["materia_codigo"] for r in rows]
     finally:
         cursor.close()
         conn.close()
 
 
-# ── Objetos públicos (misma interfaz que programas.py) ───────
+# ---- Objetos públicos (misma interfaz que programas.py) ------
 PROGRAMAS: Dict[str, Programa] = _cargar_todos()
 CODIGOS_INGLES: List[str]      = _cargar_codigos_ingles()
 

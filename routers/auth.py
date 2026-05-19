@@ -14,7 +14,7 @@ load_dotenv()
 # -- Configuracion JWT ----------------------------------------
 SECRET_KEY = os.getenv("SECRET_KEY", "")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "2"))
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 
 if not SECRET_KEY:
     raise RuntimeError(
@@ -49,6 +49,11 @@ class TokenResponse(BaseModel):
 class UserUpdate(BaseModel):
     nombre_completo: str
     email: str
+
+
+class CambiarPasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
 
 
 # -- Helpers --------------------------------------------------
@@ -285,6 +290,13 @@ def actualizar_perfil(user: UserUpdate, authorization: str = Header(...)):
         )
         connection.commit()
 
+        # Registrar en historial que el perfil fue actualizado
+        cursor.execute(
+            "INSERT INTO historial (usuario_id, accion, detalles) VALUES (%s, %s, %s)",
+            (user_id, "actualizar_perfil", f"Nombre: {user.nombre_completo} | Email: {user.email}"),
+        )
+        connection.commit()
+
     except HTTPException:
         raise
     except Exception as e:
@@ -295,3 +307,62 @@ def actualizar_perfil(user: UserUpdate, authorization: str = Header(...)):
         connection.close()
 
     return {"message": "Perfil actualizado correctamente"}
+
+
+@router.post("/cambiar-password")
+def cambiar_password(
+    body: CambiarPasswordRequest,
+    authorization: str = Header(...),
+):
+    token = extraer_token(authorization)
+    user_id = verificar_token(token)
+
+    if len(body.new_password) < 8:
+        raise HTTPException(
+            status_code=400,
+            detail="La nueva contrasena debe tener al menos 8 caracteres",
+        )
+
+    connection = get_db_connection()
+    if not connection:
+        raise HTTPException(status_code=500, detail="Error de conexion")
+
+    cursor = connection.cursor(dictionary=True)  # type: ignore[call-overload]
+    try:
+        cursor.execute(
+            "SELECT password_hash FROM usuarios WHERE id = %s",
+            (user_id,),
+        )
+        row: dict = cursor.fetchone()  # type: ignore[assignment]
+        if row is None:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+        if not verify_password(body.old_password, str(row["password_hash"])):
+            raise HTTPException(
+                status_code=400,
+                detail="La contrasena actual es incorrecta",
+            )
+
+        nuevo_hash = hash_password(body.new_password)
+        cursor.execute(
+            "UPDATE usuarios SET password_hash = %s WHERE id = %s",
+            (nuevo_hash, user_id),
+        )
+        connection.commit()
+
+        cursor.execute(
+            "INSERT INTO historial (usuario_id, accion, detalles) VALUES (%s, %s, %s)",
+            (user_id, "password_cambiado", "Contrasena actualizada"),
+        )
+        connection.commit()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        connection.rollback()
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+    finally:
+        cursor.close()
+        connection.close()
+
+    return {"message": "Contrasena actualizada correctamente"}

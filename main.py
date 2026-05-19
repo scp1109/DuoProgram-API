@@ -26,7 +26,7 @@ app.include_router(auth.router)
 app.include_router(plan.router)
 app.include_router(programas.router)
 
-@app.get("/") #flutter pub outdated
+@app.get("/")
 def root():
     return {"mensaje": "DuoProgram API funcionando"}
 

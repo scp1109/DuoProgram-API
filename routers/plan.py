@@ -1,6 +1,7 @@
 # ============================================================
 #  routers/plan.py
-#  Endpoints de planificación
+#  Los 5 Endpoints de planificación: generar (/planificar), 
+#  guardar, listar los del usuario, obtener uno específico y eliminar
 # ============================================================
 
 from fastapi import APIRouter, HTTPException, Header
@@ -33,7 +34,8 @@ class PlanRequest(BaseModel):
     semestres_cursados:         int = 0
     homologaciones_externas:    List[HomologacionRequest] = []
     practica_unica:             bool = True
-    creditos_minimos:           int = 12
+    # Matricula UTB permite desde 0 cr; el planificador no aplica este campo.
+    creditos_minimos:           int = 0
 
 
 class MateriaPlanResponse(BaseModel):
@@ -74,7 +76,13 @@ class GuardarPlanRequest(BaseModel):
 # -- Endpoint planificar --------------------------------------
 
 @router.post("/planificar", response_model=PlanResponse)
-def planificar(request: PlanRequest):
+def planificar(
+    request: PlanRequest,
+    authorization: str = Header(...),
+):
+    token = extraer_token(authorization)
+    verificar_token(token)
+
     params = ParametrosPlan(
         codigo_programa_principal  = request.codigo_programa_principal,
         codigo_programa_secundario = request.codigo_programa_secundario,
@@ -128,7 +136,6 @@ def guardar_plan(
     request: GuardarPlanRequest,
     authorization: str = Header(...)
 ):
-    # JWT reemplazó temp_token_<id>
     token   = extraer_token(authorization)
     user_id = verificar_token(token)
 
@@ -189,7 +196,6 @@ def guardar_plan(
 
 @router.get("/mis-planes")
 def obtener_mis_planes(authorization: str = Header(...)):
-    # JWT reemplazó temp_token_<id>
     token   = extraer_token(authorization)
     user_id = verificar_token(token)
 
@@ -245,7 +251,6 @@ def obtener_mis_planes(authorization: str = Header(...)):
 
 @router.get("/plan/{plan_id}")
 def obtener_plan(plan_id: int, authorization: str = Header(...)):
-    # JWT reemplazó temp_token_<id>
     token   = extraer_token(authorization)
     user_id = verificar_token(token)
 
@@ -305,7 +310,6 @@ def obtener_plan(plan_id: int, authorization: str = Header(...)):
 
 @router.delete("/plan/{plan_id}")
 def eliminar_plan(plan_id: int, authorization: str = Header(...)):
-    # JWT reemplazó temp_token_<id>
     token   = extraer_token(authorization)
     user_id = verificar_token(token)
 
@@ -325,6 +329,13 @@ def eliminar_plan(plan_id: int, authorization: str = Header(...)):
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Plan no encontrado")
 
+        # Registrar en historial que el plan fue eliminado
+        cursor.execute(
+            "INSERT INTO historial (usuario_id, accion, detalles) VALUES (%s, %s, %s)",
+            (user_id, "plan_eliminado", f"Plan ID {plan_id} eliminado"),
+        )
+        connection.commit()
+
     except HTTPException:
         raise
     except Exception as e:
@@ -341,7 +352,7 @@ def eliminar_plan(plan_id: int, authorization: str = Header(...)):
 
 @router.post("/diagnostico")
 def diagnostico(request: PlanRequest):
-    from data.programas import PROGRAMAS
+    from data.db_programas import PROGRAMAS
     from motor.planificador import (
         cargar_aprobadas, fusionar_grupos,
         calcular_electivas_cubiertas, placeholders_necesarios,
