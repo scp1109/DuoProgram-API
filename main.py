@@ -1,8 +1,10 @@
 # main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import plan, auth, programas
+from fastapi.staticfiles import StaticFiles
+from routers import plan, auth, programas, admin
 from database import init_db
+import os
 
 app = FastAPI(
     title="DuoProgram API",
@@ -25,6 +27,13 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(plan.router)
 app.include_router(programas.router)
+app.include_router(admin.router)
+
+# Dashboard admin (archivos estaticos)
+# Se sirven en /dashboard para evitar conflicto con el prefix /admin de la API
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static", "admin")
+if os.path.isdir(STATIC_DIR):
+    app.mount("/dashboard", StaticFiles(directory=STATIC_DIR, html=True), name="dashboard")
 
 @app.get("/")
 def root():

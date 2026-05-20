@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DuoProgram - Panel Administrativo</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="sidebar">
+        <div class="logo">
+            <h2>DuoProgram</h2>
+            <p>Admin Panel</p>
+        </div>
+        <nav>
+            <button class="nav-btn active" data-page="dashboard">Dashboard</button>
+            <button class="nav-btn" data-page="programas">Programas</button>
+            <button class="nav-btn" data-page="materias">Materias</button>
+            <button class="nav-btn" data-page="usuarios">Usuarios</button>
+            <button class="nav-btn" data-page="planes">Planes</button>
+        </nav>
+    </div>
+
+    <div class="main-content">
+        <header>
+            <h1 id="page-title">Dashboard</h1>
+            <div class="user-info">
+                <span>Administrador</span>
+                <button id="logout-btn" class="logout-btn">Cerrar sesion</button>
+            </div>
+        </header>
+        <div id="content">
+            <div class="loading">Cargando...</div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

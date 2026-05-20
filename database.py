@@ -6,11 +6,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Railway provee MYSQLHOST, MYSQLUSER, MYSQLPASSWORD, MYSQLDATABASE, MYSQLPORT.
+# Localmente se usan DB_HOST, DB_USER, DB_PASSWORD, DB_NAME, DB_PORT.
+# Se intenta Railway primero; si no existe, cae al valor local.
 DB_CONFIG = {
-    'host': os.getenv('DB_HOST', 'localhost'),
-    'user': os.getenv('DB_USER', 'root'),
-    'password': os.getenv('DB_PASSWORD', ''),
-    'database': os.getenv('DB_NAME', 'duoprogram_db'),
+    'host':     os.getenv('MYSQLHOST')     or os.getenv('DB_HOST',     'localhost'),
+    'user':     os.getenv('MYSQLUSER')     or os.getenv('DB_USER',     'root'),
+    'password': os.getenv('MYSQLPASSWORD') or os.getenv('DB_PASSWORD', ''),
+    'database': os.getenv('MYSQLDATABASE') or os.getenv('DB_NAME',     'duoprogram_db'),
+    'port': int(os.getenv('MYSQLPORT')     or os.getenv('DB_PORT',     3306)),
 }
 
 def get_db_connection():
@@ -22,17 +26,20 @@ def get_db_connection():
         return None
 
 def init_db():
+    # En Railway la BD ya existe y el usuario no tiene permisos para crearla.
+    # Se intenta la conexion directa; si falla, se aborta sin romper el servidor.
     connection = get_db_connection()
     if not connection:
         print("No se pudo conectar a la base de datos")
         return
-    
+
     cursor = connection.cursor()
-    
-    # Crear base de datos si no existe
-    cursor.execute(f"CREATE DATABASE IF NOT EXISTS {DB_CONFIG['database']}")
-    cursor.execute(f"USE {DB_CONFIG['database']}")
-    
+
+    # Solo intentar CREATE DATABASE en entorno local (host = localhost)
+    if DB_CONFIG['host'] == 'localhost':
+        cursor.execute(f"CREATE DATABASE IF NOT EXISTS {DB_CONFIG['database']}")
+        cursor.execute(f"USE {DB_CONFIG['database']}")
+
     # Crear tabla de usuarios
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS usuarios (
@@ -43,7 +50,7 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    
+
     # Crear tabla de planes guardados
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS planes (
@@ -66,10 +73,9 @@ def init_db():
     try:
         cursor.execute("ALTER TABLE planes ADD COLUMN nombre VARCHAR(120) DEFAULT NULL")
         connection.commit()
-        print("Columna 'nombre' agregada a la tabla planes")
     except Exception:
-        pass  # La columna ya existe, no hay nada que hacer
-    
+        pass  # La columna ya existe
+
     # Crear tabla de historial
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS historial (
@@ -81,7 +87,7 @@ def init_db():
             FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
         )
     """)
-    
+
     connection.commit()
     cursor.close()
     connection.close()

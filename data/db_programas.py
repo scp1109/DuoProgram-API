@@ -202,3 +202,13 @@ def get_codigos_practica() -> Dict[str, str]:
         if prog.codigos_practica:
             result[codigo] = list(prog.codigos_practica)[0]
     return result
+
+
+def recargar_programas() -> None:
+    """Recarga los programas desde la BD.
+    Se llama desde el router admin cada vez que se modifica la malla,
+    para que el motor de planificacion vea los cambios sin reiniciar.
+    """
+    global PROGRAMAS, CODIGOS_INGLES
+    PROGRAMAS      = _cargar_todos()
+    CODIGOS_INGLES = _cargar_codigos_ingles()
