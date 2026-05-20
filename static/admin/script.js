@@ -100,7 +100,7 @@ async function loadPlanes() {
         const res = await fetch(`${API_BASE}/admin/planes`);
         const data = await res.json();
         let html = `<div class="table-container"><table>
-            <thead><tr><th>ID</th><th>Usuario</th><th>Principal</th><th>Secundario</th><th>Semestres</th><th>Promedio</th><th>Fecha</th></tr></thead>
+            <thead><tr><th>ID</th><th>Usuario</th><th>Principal</th><th>Secundario</th><th>Semestres</th><th>Promedio</th><th>Fecha</th><th>Acciones</th></tr></thead>
             <tbody>`;
         if (data.planes && data.planes.length > 0) {
             for (const p of data.planes) {
@@ -112,15 +112,94 @@ async function loadPlanes() {
                     <td>${p.semestres_cursados}</td>
                     <td>${p.promedio}</td>
                     <td>${new Date(p.created_at).toLocaleDateString()}</td>
+                    <td><button class="btn-edit" onclick="verPlan(${p.id})">Ver</button></td>
                 </tr>`;
             }
         } else {
-            html += '<tr><td colspan="7" style="text-align:center;padding:40px;">No hay planes</td></tr>';
+            html += '<tr><td colspan="8" style="text-align:center;padding:40px;">No hay planes</td></tr>';
         }
         html += '</tbody></table></div>';
         document.getElementById('content').innerHTML = html;
     } catch(e) {
         document.getElementById('content').innerHTML = '<p>Error cargando planes</p>';
+        console.error(e);
+    }
+}
+
+async function verPlan(planId) {
+    try {
+        const res = await fetch(`${API_BASE}/admin/planes/${planId}`);
+        const plan = await res.json();
+
+        const secundario = plan.programa_secundario
+            ? `${plan.nombre_secundario} (Secundario)`
+            : 'Sin programa secundario';
+
+        const encabezado = `Plan #${plan.id} — ${plan.usuario}<br>
+            <span style="font-size:13px;font-weight:normal;color:#555;">
+                ${plan.nombre_principal} (Principal) + ${secundario}
+                &nbsp;|&nbsp; ${plan.semestres_cursados} semestres cursados
+                &nbsp;|&nbsp; Promedio ${plan.promedio}
+            </span>`;
+
+        // Construir semestres
+        const semestres = plan.plan_generado?.semestres || [];
+        let semGrid = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;margin-top:16px;">';
+
+        for (const sem of semestres) {
+            semGrid += `
+                <div style="background:#f8f9fa;border-radius:12px;padding:14px;border:1px solid #e0e0e0;">
+                    <div style="font-weight:bold;color:#1A1FC8;margin-bottom:8px;font-size:13px;">
+                        Semestre ${sem.numero} &nbsp;
+                        <span style="font-weight:normal;color:#888;">${sem.total_creditos} cr</span>
+                    </div>`;
+            for (const mat of (sem.materias || [])) {
+                const badge = mat.origen === 'compartida'
+                    ? '#9C27B0' : mat.origen === 'secundario'
+                    ? '#FF9800' : '#1A1FC8';
+                semGrid += `
+                    <div style="display:flex;justify-content:space-between;align-items:center;
+                                padding:5px 0;border-bottom:1px solid #eee;font-size:12px;">
+                        <span>${mat.nombre}</span>
+                        <span style="background:${badge};color:white;padding:1px 7px;
+                                     border-radius:10px;font-size:10px;margin-left:6px;white-space:nowrap;">
+                            ${mat.creditos}cr
+                        </span>
+                    </div>`;
+            }
+            semGrid += '</div>';
+        }
+        semGrid += '</div>';
+
+        // Modal
+        const wrapper = document.createElement('div');
+        wrapper.id = 'wrapperPlanModal';
+        wrapper.innerHTML = `
+            <div style="display:flex;position:fixed;top:0;left:0;width:100%;height:100%;
+                        background:rgba(0,0,0,0.5);justify-content:center;align-items:center;z-index:1000;padding:16px;">
+                <div style="background:white;padding:24px;border-radius:16px;width:100%;
+                            max-width:900px;max-height:90vh;overflow-y:auto;">
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;">
+                        <h2 style="color:#1A1FC8;font-size:17px;line-height:1.4;">${encabezado}</h2>
+                        <button onclick="document.getElementById('wrapperPlanModal').remove()"
+                            style="background:none;border:none;font-size:22px;cursor:pointer;
+                                   color:#888;margin-left:12px;flex-shrink:0;">✕</button>
+                    </div>
+                    <div style="font-size:11px;color:#aaa;margin-bottom:4px;">
+                        <span style="display:inline-block;width:10px;height:10px;border-radius:50%;
+                                     background:#1A1FC8;margin-right:4px;"></span>Principal
+                        <span style="display:inline-block;width:10px;height:10px;border-radius:50%;
+                                     background:#FF9800;margin:0 4px 0 12px;"></span>Secundario
+                        <span style="display:inline-block;width:10px;height:10px;border-radius:50%;
+                                     background:#9C27B0;margin:0 4px 0 12px;"></span>Compartida
+                    </div>
+                    ${semGrid}
+                </div>
+            </div>`;
+        document.body.appendChild(wrapper);
+
+    } catch(e) {
+        alert('Error cargando el plan');
         console.error(e);
     }
 }
@@ -134,7 +213,7 @@ async function loadProgramas() {
         let html = `
             <button class="btn-primary" onclick="showProgramaModal()">+ Nuevo Programa</button>
             <div class="table-container"><table>
-                <thead><tr><th>Codigo</th><th>Nombre</th><th>Semestres</th><th>Facultad</th><th>Acciones</th></tr></thead>
+                <thead><tr><th>Codigo</th><th>Nombre</th><th style="text-align:center;">Semestres</th><th>Facultad</th><th>Acciones</th></tr></thead>
                 <tbody>`;
         if (data.programas && data.programas.length > 0) {
             for (const p of data.programas) {

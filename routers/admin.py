@@ -158,7 +158,43 @@ def get_planes():
     return {"planes": planes}
 
 
-# -- Programas ------------------------------------------------
+@router.get("/planes/{plan_id}")
+def get_plan_detalle(plan_id: int):
+    """Retorna el detalle completo de un plan incluyendo el JSON generado."""
+    conn = get_db_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Error de conexion a la BD")
+
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("""
+        SELECT p.id, u.nombre_completo AS usuario,
+               p.programa_principal, p.programa_secundario,
+               pp.nombre AS nombre_principal,
+               ps.nombre AS nombre_secundario,
+               p.semestres_cursados, p.promedio, p.plan_generado, p.created_at
+        FROM planes p
+        JOIN usuarios u ON p.usuario_id = u.id
+        LEFT JOIN programas pp ON p.programa_principal = pp.codigo
+        LEFT JOIN programas ps ON p.programa_secundario = ps.codigo
+        WHERE p.id = %s
+    """, (plan_id,))
+    plan = _one(cursor)
+    cursor.close()
+    conn.close()
+
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan no encontrado")
+
+    if plan.get("created_at"):
+        plan["created_at"] = str(plan["created_at"])
+
+    # plan_generado viene como string JSON desde la BD
+    import json
+    if isinstance(plan.get("plan_generado"), str):
+        plan["plan_generado"] = json.loads(plan["plan_generado"])
+
+    return plan
+
 
 @router.get("/programas")
 def get_programas():
