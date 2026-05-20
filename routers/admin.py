@@ -169,9 +169,12 @@ def get_programas():
 
     cursor = conn.cursor(dictionary=True)
     cursor.execute("""
-        SELECT codigo, nombre, facultad
-        FROM programas
-        ORDER BY codigo
+        SELECT p.codigo, p.nombre, p.facultad,
+               COALESCE(MAX(pm.nivel), 0) AS total_semestres
+        FROM programas p
+        LEFT JOIN programa_materia pm ON p.codigo = pm.programa_codigo
+        GROUP BY p.codigo, p.nombre, p.facultad
+        ORDER BY p.codigo
     """)
     programas = _all(cursor)
     cursor.close()
