@@ -157,15 +157,13 @@ function showProgramaModal() {
     const codigo   = prompt('Codigo del programa (ej: IMEC):');   if (!codigo)   return;
     const nombre   = prompt('Nombre completo del programa:');      if (!nombre)   return;
     const facultad = prompt('Facultad:');                          if (!facultad) return;
-    const creditos = prompt('Creditos totales:');                  if (!creditos) return;
 
     fetch(`${API_BASE}/admin/programas`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             codigo: codigo.toUpperCase(),
-            nombre, facultad,
-            creditos_totales: parseInt(creditos)
+            nombre, facultad
         })
     })
     .then(r => r.json())

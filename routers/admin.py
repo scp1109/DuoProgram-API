@@ -35,7 +35,6 @@ class ProgramaCreate(BaseModel):
     codigo: str
     nombre: str
     facultad: str
-    creditos_totales: int
 
 class MateriaCreate(BaseModel):
     codigo: str
@@ -67,7 +66,6 @@ class ProgramaCompleto(BaseModel):
     codigo: str
     nombre: str
     facultad: str
-    creditos_totales: int
     materias: List[MateriaCreate]
     grupos_electivas: List[GrupoElectivaCreate] = []
 
@@ -171,7 +169,7 @@ def get_programas():
 
     cursor = conn.cursor(dictionary=True)
     cursor.execute("""
-        SELECT codigo, nombre, facultad, creditos_totales
+        SELECT codigo, nombre, facultad
         FROM programas
         ORDER BY codigo
     """)
@@ -196,7 +194,7 @@ def get_programa_detalle(programa_codigo: str):
     cursor = conn.cursor(dictionary=True)
 
     cursor.execute("""
-        SELECT codigo, nombre, facultad, creditos_totales
+        SELECT codigo, nombre, facultad
         FROM programas WHERE codigo = %s
     """, (programa_codigo,))
     programa = _one(cursor)
@@ -243,9 +241,9 @@ def crear_programa(data: ProgramaCreate):
     cursor = conn.cursor()
     try:
         cursor.execute("""
-            INSERT INTO programas (codigo, nombre, facultad, creditos_totales)
-            VALUES (%s, %s, %s, %s)
-        """, (data.codigo.upper(), data.nombre, data.facultad, data.creditos_totales))
+            INSERT INTO programas (codigo, nombre, facultad)
+            VALUES (%s, %s, %s)
+        """, (data.codigo.upper(), data.nombre, data.facultad))
         conn.commit()
         recargar_programas()
         return {"id": data.codigo.upper(), "mensaje": "Programa creado correctamente"}
@@ -268,9 +266,9 @@ def crear_programa_completo(data: ProgramaCompleto):
     codigo = data.codigo.upper()
     try:
         cursor.execute("""
-            INSERT INTO programas (codigo, nombre, facultad, creditos_totales)
-            VALUES (%s, %s, %s, %s)
-        """, (codigo, data.nombre, data.facultad, data.creditos_totales))
+            INSERT INTO programas (codigo, nombre, facultad)
+            VALUES (%s, %s, %s)
+        """, (codigo, data.nombre, data.facultad))
 
         for mat in data.materias:
             cursor.execute("""
