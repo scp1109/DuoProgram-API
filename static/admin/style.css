@@ -59,11 +59,12 @@ nav { padding: 16px 0; flex: 1; }
     display: none;
     background: none;
     border: none;
-    color: white;
-    font-size: 24px;
+    color: #1A1FC8;
+    font-size: 26px;
     cursor: pointer;
     padding: 4px 8px;
     line-height: 1;
+    flex-shrink: 0;
 }
 
 /* Overlay oscuro cuando el menu esta abierto en movil */
