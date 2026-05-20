@@ -121,7 +121,7 @@ async function loadProgramas() {
         let html = `
             <button class="btn-primary" onclick="showProgramaModal()">+ Nuevo Programa</button>
             <div class="table-container"><table>
-                <thead><tr><th>Codigo</th><th>Nombre</th><th>Facultad</th><th>Creditos</th><th>Acciones</th></tr></thead>
+                <thead><tr><th>Codigo</th><th>Nombre</th><th>Facultad</th><th>Acciones</th></tr></thead>
                 <tbody>`;
         if (data.programas && data.programas.length > 0) {
             for (const p of data.programas) {
@@ -129,12 +129,11 @@ async function loadProgramas() {
                     <td><strong>${p.codigo}</strong></td>
                     <td>${p.nombre}</td>
                     <td>${p.facultad}</td>
-                    <td>${p.creditos_totales}</td>
                     <td><button class="btn-danger" onclick="deletePrograma('${p.codigo}')">Eliminar</button></td>
                 </tr>`;
             }
         } else {
-            html += '<tr><td colspan="5" style="text-align:center;padding:40px;">No hay programas</td></tr>';
+            html += '<tr><td colspan="4" style="text-align:center;padding:40px;">No hay programas</td></tr>';
         }
         html += '</tbody></table></div>';
         document.getElementById('content').innerHTML = html;
