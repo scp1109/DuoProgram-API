@@ -15,7 +15,7 @@ body {
     width: 260px;
     background: linear-gradient(135deg, #1A1FC8, #0f1490);
     color: white;
-    height: 100vh;
+    height: 100dvh;
     position: fixed;
     left: 0;
     top: 0;
@@ -81,7 +81,7 @@ nav { padding: 16px 0; flex: 1; }
 
 .main-content {
     margin-left: 260px;
-    min-height: 100vh;
+    min-height: 100dvh;
     display: flex;
     flex-direction: column;
 }
@@ -214,6 +214,7 @@ tr:hover        { background: #f9f9f9; }
     /* El sidebar se oculta fuera de pantalla por defecto */
     .sidebar {
         transform: translateX(-100%);
+        width: 220px;
     }
 
     /* Cuando tiene la clase open, desliza hacia adentro */
@@ -261,8 +262,21 @@ tr:hover        { background: #f9f9f9; }
     th, td { padding: 10px 10px; font-size: 13px; }
 }
 
-@media (max-width: 380px) {
+@media (max-width: 480px) {
     .stats-grid {
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: 1fr;
     }
+}
+
+@media (max-width: 380px) {
+
+    header h1 {
+        font-size: 15px;
+    }
+
+    .logout-btn {
+        padding: 6px 10px;
+        font-size: 12px;
+    }
+
 }
