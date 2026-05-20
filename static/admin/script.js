@@ -7,6 +7,18 @@ const API_BASE = window.location.port === '8000'
 let currentPage = 'dashboard';
 let currentProgramaId = null;
 
+// -- Menu lateral (responsive) --------------------------------
+
+function abrirMenu() {
+    document.getElementById('sidebar').classList.add('open');
+    document.getElementById('overlay').classList.add('visible');
+}
+
+function cerrarMenu() {
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('overlay').classList.remove('visible');
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.nav-btn').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -14,6 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
             btn.classList.add('active');
             currentPage = btn.dataset.page;
             document.getElementById('page-title').textContent = btn.textContent.trim();
+            cerrarMenu(); // cerrar menu en movil al navegar
             loadPage(currentPage);
         });
     });
