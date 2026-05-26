@@ -12,6 +12,3 @@ __pycache__/
 # Base de datos local
 *.db
 *.sqlite3
-
-# Flutter web build - archivos grandes, se generan localmente
-flutter_web/
