@@ -29,11 +29,15 @@ app.include_router(plan.router)
 app.include_router(programas.router)
 app.include_router(admin.router)
 
-# Dashboard admin (archivos estaticos)
-# Se sirven en /dashboard para evitar conflicto con el prefix /admin de la API
+# Dashboard admin
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static", "admin")
 if os.path.isdir(STATIC_DIR):
     app.mount("/dashboard", StaticFiles(directory=STATIC_DIR, html=True), name="dashboard")
+
+# Flutter web app
+FLUTTER_DIR = os.path.join(os.path.dirname(__file__), "flutter_web")
+if os.path.isdir(FLUTTER_DIR):
+    app.mount("/app", StaticFiles(directory=FLUTTER_DIR, html=True), name="flutter_app")
 
 @app.get("/")
 def root():

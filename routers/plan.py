@@ -34,6 +34,7 @@ class PlanRequest(BaseModel):
     semestres_cursados:         int = 0
     homologaciones_externas:    List[HomologacionRequest] = []
     practica_unica:             bool = True
+    practica_sola:              bool = False
     # Matricula UTB permite desde 0 cr; el planificador no aplica este campo.
     creditos_minimos:           int = 0
 
@@ -98,6 +99,7 @@ def planificar(
             for h in request.homologaciones_externas
         ],
         practica_unica = request.practica_unica,
+        practica_sola  = request.practica_sola,
     )
 
     plan = generar_plan(params)

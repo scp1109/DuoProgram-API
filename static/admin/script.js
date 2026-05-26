@@ -423,11 +423,14 @@ async function _guardarMateria(codigoOriginal, esEdicion) {
     try {
         let res;
         if (esEdicion) {
-            res = await fetch(`${API_BASE}/admin/materias/${codigoOriginal}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body)
-            });
+            res = await fetch(
+                `${API_BASE}/admin/programas/${encodeURIComponent(currentProgramaId)}/materias/${encodeURIComponent(codigoOriginal)}`,
+                {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                }
+            );
         } else {
             res = await fetch(`${API_BASE}/admin/materias?programa_id=${currentProgramaId}`, {
                 method: 'POST',
@@ -448,10 +451,16 @@ async function _guardarMateria(codigoOriginal, esEdicion) {
 }
 
 async function eliminarMateria(materiaCodigo) {
-    if (!confirm(`¿Eliminar la materia ${materiaCodigo}?`)) return;
+    if (!confirm(`Quitar la materia ${materiaCodigo} solo de ${currentProgramaId}?`)) return;
     try {
-        const res = await fetch(`${API_BASE}/admin/materias/${materiaCodigo}`, { method: 'DELETE' });
-        if (res.ok) { alert('Materia eliminada'); cargarMateriasPorPrograma(); }
-        else alert('Error al eliminar la materia');
+        const res = await fetch(
+            `${API_BASE}/admin/programas/${encodeURIComponent(currentProgramaId)}/materias/${encodeURIComponent(materiaCodigo)}`,
+            { method: 'DELETE' }
+        );
+        if (res.ok) { alert('Materia quitada del programa'); cargarMateriasPorPrograma(); }
+        else {
+            const err = await res.json();
+            alert('Error: ' + (err.detail || 'No se pudo quitar la materia'));
+        }
     } catch(e) { alert('Error al eliminar'); }
 }

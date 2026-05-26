@@ -430,34 +430,72 @@ def crear_materia(programa_id: str, data: MateriaCreate):
         conn.close()
 
 
-@router.put("/materias/{materia_codigo}")
-def actualizar_materia(materia_codigo: str, data: MateriaUpdate):
-    """Actualiza los datos globales de una materia (afecta todos los programas que la usan)."""
+@router.put("/programas/{programa_codigo}/materias/{materia_codigo}")
+def actualizar_materia_programa(
+    programa_codigo: str,
+    materia_codigo: str,
+    data: MateriaUpdate,
+):
+    """Actualiza una materia dentro de un programa.
+
+    nombre/creditos/tipo son datos globales de la materia.
+    nivel y prerrequisitos se actualizan solo para el programa indicado.
+    """
     conn = get_db_connection()
     if not conn:
         raise HTTPException(status_code=500, detail="Error de conexion a la BD")
 
     cursor = conn.cursor()
+    programa_codigo = programa_codigo.upper()
     try:
+        if data.codigo != materia_codigo:
+            raise HTTPException(
+                status_code=400,
+                detail="No se puede cambiar el codigo de una materia existente desde este formulario",
+            )
+
+        cursor.execute("SELECT 1 FROM materias WHERE codigo = %s", (materia_codigo,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Materia no encontrada")
+
+        cursor.execute("""
+            SELECT 1 FROM programa_materia
+            WHERE programa_codigo = %s AND materia_codigo = %s
+        """, (programa_codigo, materia_codigo))
+        if not cursor.fetchone():
+            raise HTTPException(
+                status_code=404,
+                detail="La materia no esta vinculada a este programa",
+            )
+
         cursor.execute("""
             UPDATE materias
             SET nombre = %s, creditos = %s, es_proyecto = %s, es_practica = %s
             WHERE codigo = %s
         """, (data.nombre, data.creditos, data.es_proyecto, data.es_practica, materia_codigo))
 
-        if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Materia no encontrada")
-
         cursor.execute("""
             UPDATE programa_materia SET nivel = %s
-            WHERE materia_codigo = %s
-        """, (data.nivel, materia_codigo))
+            WHERE programa_codigo = %s AND materia_codigo = %s
+        """, (data.nivel, programa_codigo, materia_codigo))
+
+        cursor.execute("""
+            DELETE FROM prerrequisitos
+            WHERE programa_codigo = %s AND materia_codigo = %s
+        """, (programa_codigo, materia_codigo))
+
+        for pre_codigo in data.prerrequisitos:
+            cursor.execute("""
+                INSERT IGNORE INTO prerrequisitos (programa_codigo, materia_codigo, prereq_codigo)
+                VALUES (%s, %s, %s)
+            """, (programa_codigo, materia_codigo, pre_codigo))
 
         conn.commit()
         recargar_programas()
         return {"mensaje": "Materia actualizada correctamente"}
 
     except HTTPException:
+        conn.rollback()
         raise
     except Exception as e:
         conn.rollback()
@@ -467,22 +505,44 @@ def actualizar_materia(materia_codigo: str, data: MateriaUpdate):
         conn.close()
 
 
-@router.delete("/materias/{materia_codigo}")
-def eliminar_materia(materia_codigo: str):
-    """Elimina una materia y todos sus vinculos con programas y prerrequisitos."""
+@router.delete("/programas/{programa_codigo}/materias/{materia_codigo}")
+def eliminar_materia_de_programa(programa_codigo: str, materia_codigo: str):
+    """Quita una materia solo del programa indicado.
+
+    La materia global se conserva porque puede estar compartida con otros programas.
+    """
     conn = get_db_connection()
     if not conn:
         raise HTTPException(status_code=500, detail="Error de conexion a la BD")
 
     cursor = conn.cursor()
+    programa_codigo = programa_codigo.upper()
     try:
-        cursor.execute("DELETE FROM materias WHERE codigo = %s", (materia_codigo,))
-        if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Materia no encontrada")
+        cursor.execute("""
+            SELECT 1 FROM programa_materia
+            WHERE programa_codigo = %s AND materia_codigo = %s
+        """, (programa_codigo, materia_codigo))
+        if not cursor.fetchone():
+            raise HTTPException(
+                status_code=404,
+                detail="La materia no esta vinculada a este programa",
+            )
+
+        cursor.execute("""
+            DELETE FROM prerrequisitos
+            WHERE programa_codigo = %s
+              AND (materia_codigo = %s OR prereq_codigo = %s)
+        """, (programa_codigo, materia_codigo, materia_codigo))
+
+        cursor.execute("""
+            DELETE FROM programa_materia
+            WHERE programa_codigo = %s AND materia_codigo = %s
+        """, (programa_codigo, materia_codigo))
         conn.commit()
         recargar_programas()
-        return {"mensaje": "Materia eliminada correctamente"}
+        return {"mensaje": "Materia quitada del programa correctamente"}
     except HTTPException:
+        conn.rollback()
         raise
     except Exception as e:
         conn.rollback()

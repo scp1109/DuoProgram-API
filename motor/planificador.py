@@ -37,6 +37,7 @@ class ParametrosPlan:
     semestres_cursados:         int
     homologaciones_externas:    List[HomologacionExterna] = field(default_factory=list)
     practica_unica:             bool = True
+    practica_sola:              bool = False  # True = ultimo semestre solo con practica
 
     @property
     def max_creditos(self) -> int:
@@ -111,6 +112,7 @@ def generar_plan(params: ParametrosPlan) -> List[SemestrePlan]:
         semestre_inicial=params.semestres_cursados + 1,
         prog_p=prog_p,
         prog_s=prog_s,
+        practica_sola=params.practica_sola,
     )
 
     return plan
@@ -334,6 +336,7 @@ def planificar_semestres_optimizado(
     semestre_inicial: int,
     prog_p: Programa,
     prog_s: Optional[Programa],
+    practica_sola: bool = False,
 ) -> List[SemestrePlan]:
     """
     Algoritmo optimizado para lograr 20 créditos por semestre:
@@ -391,27 +394,48 @@ def planificar_semestres_optimizado(
         # antes que otras materias de 2cr con nivel mayor (humanidades, etc.)
         disponibles_2cr_sorted = sorted(disponibles_2cr, key=lambda m: m.nivel)
 
+        # FASE 2: Agregar materias de 1 credito antes de las de 2 creditos.
+        # Asi Seminario y similares no quedan desplazadas por una materia de 2cr
+        # cuando solo habia 1 credito libre.
+        if usados < cred_max:
+            disponibles_1cr = [
+                m for m in disponibles if m.creditos == 1 and m not in semestre_mats
+            ]
+            for mat in disponibles_1cr:
+                if usados + mat.creditos <= cred_max:
+                    semestre_mats.append(mat)
+                    usados += mat.creditos
+
         # FASE 2: Agregar UNA materia de 2 créditos si hay disponible
         if usados <= 18 and disponibles_2cr_sorted:
             mat_2cr = disponibles_2cr_sorted[0]
-            semestre_mats.append(mat_2cr)
-            usados += mat_2cr.creditos
+            if mat_2cr not in semestre_mats and usados + mat_2cr.creditos <= cred_max:
+                semestre_mats.append(mat_2cr)
+                usados += mat_2cr.creditos
 
-        # FASE 3: Si aún falta para llegar a 20, agregar más materias
+        # FASE 3: Si aun falta para llegar al maximo, agregar materias restantes.
+        # Las de 1cr se agregan PRIMERO para que no queden bloqueadas por las de 3cr.
         if usados < cred_max:
-            for mat in disponibles_3cr:
-                if mat not in semestre_mats and usados + mat.creditos <= cred_max:
+            disponibles_1cr = [
+                m for m in disponibles if m.creditos == 1 and m not in semestre_mats
+            ]
+            for mat in disponibles_1cr:
+                if usados + mat.creditos <= cred_max:
                     semestre_mats.append(mat)
                     usados += mat.creditos
-                    if usados >= cred_max:
-                        break
-            if usados < cred_max and disponibles_2cr:
-                for mat in disponibles_2cr:
-                    if mat not in semestre_mats and usados + mat.creditos <= cred_max:
-                        semestre_mats.append(mat)
-                        usados += mat.creditos
-                        if usados >= cred_max:
-                            break
+
+            # Luego rellena con las demas (3cr+) que quepan
+            disponibles_grandes = [
+                m for m in disponibles
+                if m.creditos != 1 and m not in semestre_mats
+            ]
+            disponibles_grandes.sort(key=lambda m: (m.nivel, -m.creditos))
+            for mat in disponibles_grandes:
+                if usados + mat.creditos <= cred_max:
+                    semestre_mats.append(mat)
+                    usados += mat.creditos
+                if usados >= cred_max:
+                    break
 
         if not semestre_mats:
             semestre_mats = [disponibles[0]]
@@ -442,18 +466,31 @@ def planificar_semestres_optimizado(
 
         semestre += 1
 
-    # Agregar práctica al final
+    # Agregar practica al final
     if practica:
         materias_con_practica = [practica]
         creditos_practica = practica.creditos
-        
-        if creditos_practica <= 17 and materias_2cr:
-            for mat in materias_2cr[:]:
-                if creditos_practica + mat.creditos <= cred_max:
+
+        if not practica_sola:
+            # Meter TODAS las materias restantes que quepan junto con la practica.
+            # Esto evita los semestres diminutos (Etica 2cr sola, Seminario 1cr solo)
+            # que aparecian cuando el greedy no las podia empaquetar en fases 1-2.
+            todas_restantes = list(materias_2cr) + [
+                m for m in materias_restantes if m.codigo in pendientes_set
+            ]
+            todas_restantes.sort(key=lambda m: (-m.creditos, m.nivel))
+            for mat in todas_restantes:
+                if prerequisitos_cumplidos(mat, vistas) and \
+                   creditos_practica + mat.creditos <= cred_max:
                     materias_con_practica.append(mat)
                     creditos_practica += mat.creditos
-                    if creditos_practica >= cred_max:
-                        break
+        else:
+            # practica_sola=True: solo agregar una materia de 2cr si cabe
+            if creditos_practica <= 17 and materias_2cr:
+                for mat in materias_2cr[:1]:
+                    if creditos_practica + mat.creditos <= cred_max:
+                        materias_con_practica.append(mat)
+                        creditos_practica += mat.creditos
 
         plan.append(SemestrePlan(
             numero=semestre,
