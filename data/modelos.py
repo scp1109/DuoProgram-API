@@ -18,6 +18,13 @@ class Materia:
     creditos: int
     nivel: int
     prerrequisitos: List[str] = field(default_factory=list)
+    # Caminos alternativos de prerrequisitos, uno por programa. Solo se llena
+    # cuando una materia compartida exige cosas que NO se contienen entre si
+    # segun el programa (Estructura de Datos: POO en ISCO, Programacion para
+    # Ciencia de Datos en CDAT). Si no esta vacia, basta con cumplir UNA de
+    # las listas; `prerrequisitos` guarda entonces la union, solo para los
+    # usos conservadores (orden de la cola, chequeos de seguridad).
+    alternativas: List[List[str]] = field(default_factory=list)
     es_proyecto: bool = False
     es_practica: bool = False
     proyecto_compartido: Optional[str] = None
@@ -52,6 +59,10 @@ class Programa:
     _codigos_practica: Set[str] = field(default_factory=set, repr=False)
     _codigos_proyecto: Set[str] = field(default_factory=set, repr=False)
     _opciones_electivas: Dict[str, str] = field(default_factory=dict, repr=False)
+    # Indices para get_materia()/get_grupo_electiva(), que antes recorrian la
+    # lista completa en cada consulta (O(n) por llamada dentro del greedy).
+    _materias_por_codigo: Dict[str, "Materia"] = field(default_factory=dict, repr=False)
+    _grupos_por_tipo: Dict[str, "GrupoElectiva"] = field(default_factory=dict, repr=False)
 
     def __post_init__(self):
         self._calcular_caches()
@@ -80,6 +91,15 @@ class Programa:
             for opt in ge.opciones:
                 self._opciones_electivas[opt.codigo] = ge.tipo_codigo
 
+        # setdefault (y no asignacion directa) para conservar la semantica
+        # anterior: el bucle lineal devolvia la PRIMERA coincidencia, asi que
+        # si la malla trae codigos repetidos gana el primero, igual que antes.
+        for m in self.materias:
+            self._materias_por_codigo.setdefault(m.codigo, m)
+
+        for ge in self.grupos_electivas:
+            self._grupos_por_tipo.setdefault(ge.tipo_codigo, ge)
+
     @property
     def placeholders(self) -> Dict[str, str]:
         return self._placeholders
@@ -101,10 +121,7 @@ class Programa:
         return self._codigos_proyecto
 
     def get_materia(self, codigo: str) -> Optional[Materia]:
-        for m in self.materias:
-            if m.codigo == codigo:
-                return m
-        return None
+        return self._materias_por_codigo.get(codigo)
 
     def get_materias_por_nivel(self, nivel: int) -> List[Materia]:
         return self._materias_por_nivel.get(nivel, [])
@@ -125,10 +142,7 @@ class Programa:
         return self._opciones_electivas.get(codigo)
 
     def get_grupo_electiva(self, tipo_codigo: str) -> Optional[GrupoElectiva]:
-        for ge in self.grupos_electivas:
-            if ge.tipo_codigo == tipo_codigo:
-                return ge
-        return None
+        return self._grupos_por_tipo.get(tipo_codigo)
 
     def total_creditos(self) -> int:
         obligatorios = sum(m.creditos for m in self._materias_obligatorias.values())

@@ -7,6 +7,155 @@ const API_BASE = window.location.port === '8000'
 let currentPage = 'dashboard';
 let currentProgramaId = null;
 
+// -- Autenticacion --------------------------------------------
+// Los endpoints /admin/* ya no estan abiertos: exigen un JWT (el mismo de
+// /auth/login) cuyo email este en la variable ADMIN_EMAILS del servidor.
+// No hay pantalla de login en el dashboard: el token se guarda a mano desde
+// la consola del navegador con
+//   localStorage.setItem('duoprogram_admin_token', '<token>')
+const ADMIN_TOKEN_KEY = 'duoprogram_admin_token';
+
+function obtenerToken() {
+    // localStorage lanza si el navegador bloquea el almacenamiento
+    // (modo privado con cookies restringidas), asi que se protege.
+    try {
+        return localStorage.getItem(ADMIN_TOKEN_KEY) || '';
+    } catch (e) {
+        return '';
+    }
+}
+
+function escaparHtml(texto) {
+    return String(texto)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// Escapa todos los textos de una respuesta de la API, a cualquier
+// profundidad. Se aplica en apiFetch, en la frontera, en vez de escapar
+// cada interpolacion por separado: el panel arma su HTML con innerHTML y
+// template strings en decenas de sitios, y bastaba olvidar uno para que un
+// nombre de usuario como <img src=x onerror=...> ejecutara codigo en el
+// navegador del admin y le robara el token guardado en localStorage.
+// Escapando al recibir, todo dato que venga de la API es seguro por
+// construccion, incluidas las pantallas que se agreguen despues.
+// Seguro aqui porque el panel solo usa estos datos para pintar HTML; los
+// valores que se envian de vuelta se leen de los formularios, no de aqui.
+function escaparProfundo(valor) {
+    if (typeof valor === 'string') return escaparHtml(valor);
+    if (Array.isArray(valor)) return valor.map(escaparProfundo);
+    if (valor && typeof valor === 'object') {
+        const out = {};
+        for (const [k, v] of Object.entries(valor)) out[k] = escaparProfundo(v);
+        return out;
+    }
+    return valor;
+}
+
+// Texto legible para el `detail` de un error de la API. Un 422 de validacion
+// de FastAPI no trae un texto sino una lista de {loc, msg, type}; al
+// concatenarla salia "Error: [object Object]" y el admin no sabia que el
+// problema era, por ejemplo, un guion en el codigo.
+function textoDeError(cuerpo, porDefecto) {
+    const detalle = cuerpo && cuerpo.detail;
+    if (typeof detalle === 'string' && detalle) return detalle;
+    if (Array.isArray(detalle) && detalle.length) {
+        return detalle.map(e => {
+            const campo = (e.loc || []).filter(x => x !== 'body').join(' > ');
+            const msg = e.type === 'string_pattern_mismatch'
+                ? 'use solo MAYUSCULAS, numeros y guion bajo'
+                : e.msg;
+            return campo ? `${campo}: ${msg}` : msg;
+        }).join('\n');
+    }
+    return porDefecto;
+}
+
+function mostrarAvisoToken(motivo) {
+    // Los modales se dibujan sobre #content: si quedan abiertos taparian el
+    // aviso y el usuario no entenderia por que fallo la operacion.
+    ['wrapperModalMateria', 'wrapperPlanModal'].forEach(id => {
+        const modal = document.getElementById(id);
+        if (modal) modal.remove();
+    });
+
+    const content = document.getElementById('content');
+    if (!content) return;
+    content.innerHTML = `
+        <div style="background:white;border-radius:16px;padding:24px;max-width:720px;
+                    box-shadow:0 2px 8px rgba(0,0,0,0.1);border-left:5px solid #ff4444;">
+            <h2 style="color:#ff4444;font-size:18px;margin-bottom:10px;">Acceso no autorizado</h2>
+            <p style="margin-bottom:12px;font-size:14px;color:#444;">${escaparHtml(motivo)}</p>
+            <p style="margin-bottom:10px;font-size:14px;color:#444;">
+                El panel usa el token JWT de una cuenta administradora. Para guardarlo,
+                inicie sesion en <code>/auth/login</code>, copie el <code>access_token</code>
+                y ejecute esto en la consola del navegador (F12):
+            </p>
+            <pre style="background:#f4f4f8;padding:12px;border-radius:8px;font-size:12px;
+                        overflow-x:auto;">localStorage.setItem('${ADMIN_TOKEN_KEY}', '&lt;token&gt;')</pre>
+            <p style="font-size:13px;color:#666;margin-top:12px;">
+                Despues recargue la pagina. Si el error persiste, el email de esa cuenta
+                no esta en la variable de entorno <code>ADMIN_EMAILS</code> del servidor.
+            </p>
+        </div>`;
+}
+
+// Los catch de cada vista escriben su propio "Error cargando ..." en #content.
+// Se marca el error de autenticacion para que no pisen el aviso del token.
+function errorDeAuth(mensaje) {
+    const err = new Error(mensaje);
+    err.authFail = true;
+    return err;
+}
+
+function mostrarErrorEnContenido(mensaje, e) {
+    console.error(e);
+    if (e && e.authFail) return; // el aviso del token ya esta en pantalla
+    document.getElementById('content').innerHTML = `<p>${escaparHtml(mensaje)}</p>`;
+}
+
+function avisarError(mensaje, e) {
+    console.error(e);
+    if (e && e.authFail) return; // idem: no tapar el aviso con un alert
+    alert(mensaje);
+}
+
+// Punto unico de salida hacia la API: agrega el header Authorization y
+// traduce 401/403 en el aviso de token.
+async function apiFetch(path, options = {}) {
+    const token = obtenerToken();
+    if (!token) {
+        mostrarAvisoToken('No hay ningun token de administrador guardado en este navegador.');
+        throw errorDeAuth('Sin token');
+    }
+
+    const opciones = Object.assign({}, options);
+    opciones.headers = Object.assign({}, options.headers || {}, {
+        'Authorization': `Bearer ${token}`,
+    });
+
+    const res = await fetch(`${API_BASE}${path}`, opciones);
+
+    if (res.status === 401 || res.status === 403) {
+        let detalle = '';
+        try {
+            const cuerpo = await res.json();
+            detalle = cuerpo.detail || '';
+        } catch (e) { /* respuesta sin JSON */ }
+        mostrarAvisoToken(
+            res.status === 401
+                ? `El token guardado no es valido o expiro. ${detalle}`
+                : `El servidor rechazo el acceso. ${detalle}`
+        );
+        throw errorDeAuth(`HTTP ${res.status}`);
+    }
+
+    // Toda lectura de JSON pasa por el escape (ver escaparProfundo).
+    const jsonOriginal = res.json.bind(res);
+    res.json = async () => escaparProfundo(await jsonOriginal());
+    return res;
+}
+
 // -- Menu lateral (responsive) --------------------------------
 
 function abrirMenu() {
@@ -18,6 +167,27 @@ function cerrarMenu() {
     document.getElementById('sidebar').classList.remove('open');
     document.getElementById('overlay').classList.remove('visible');
 }
+
+// Botones que actuan sobre un codigo (programa o materia). Antes eran
+// onclick="eliminarMateria('${codigo}')": el navegador decodifica las
+// entidades del atributo ANTES de ejecutar el JavaScript, asi que el escape
+// de escaparProfundo no servia ahi y un codigo como  x');alert(1);('
+// ejecutaba codigo en el navegador del admin. Con data-codigo el valor se
+// lee como texto y nunca se evalua. Un solo listener delegado cubre tambien
+// las filas que se pintan despues con innerHTML.
+const ACCIONES = {
+    'ver-plan':          b => verPlan(Number(b.dataset.id)),
+    'eliminar-programa': b => deletePrograma(b.dataset.codigo),
+    'editar-materia':    b => mostrarModalEditarMateria(b.dataset.codigo),
+    'eliminar-materia':  b => eliminarMateria(b.dataset.codigo),
+    'guardar-materia':   b => _guardarMateria(b.dataset.codigo, b.dataset.edicion === 'si'),
+};
+
+document.addEventListener('click', (e) => {
+    const boton = e.target.closest('[data-accion]');
+    const accion = boton && ACCIONES[boton.dataset.accion];
+    if (accion) accion(boton);
+});
 
 document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.nav-btn').forEach(btn => {
@@ -49,7 +219,7 @@ async function loadPage(page) {
 
 async function loadDashboard() {
     try {
-        const res = await fetch(`${API_BASE}/admin/stats`);
+        const res = await apiFetch('/admin/stats');
         const stats = await res.json();
         document.getElementById('content').innerHTML = `
             <div class="stats-grid">
@@ -59,8 +229,7 @@ async function loadDashboard() {
                 <div class="stat-card"><h3>${stats.total_materias || 0}</h3><p>Materias</p></div>
             </div>`;
     } catch(e) {
-        document.getElementById('content').innerHTML = '<p>Error cargando dashboard</p>';
-        console.error(e);
+        mostrarErrorEnContenido('Error cargando dashboard', e);
     }
 }
 
@@ -68,7 +237,7 @@ async function loadDashboard() {
 
 async function loadUsuarios() {
     try {
-        const res = await fetch(`${API_BASE}/admin/usuarios`);
+        const res = await apiFetch('/admin/usuarios');
         const data = await res.json();
         let html = `<div class="table-container"><table>
             <thead><tr><th>ID</th><th>Nombre</th><th>Email</th><th>Fecha Registro</th></tr></thead>
@@ -88,8 +257,7 @@ async function loadUsuarios() {
         html += '</tbody></table></div>';
         document.getElementById('content').innerHTML = html;
     } catch(e) {
-        document.getElementById('content').innerHTML = '<p>Error cargando usuarios</p>';
-        console.error(e);
+        mostrarErrorEnContenido('Error cargando usuarios', e);
     }
 }
 
@@ -97,7 +265,7 @@ async function loadUsuarios() {
 
 async function loadPlanes() {
     try {
-        const res = await fetch(`${API_BASE}/admin/planes`);
+        const res = await apiFetch('/admin/planes');
         const data = await res.json();
         let html = `<div class="table-container"><table>
             <thead><tr><th>ID</th><th>Usuario</th><th>Principal</th><th>Secundario</th><th>Semestres</th><th>Promedio</th><th>Fecha</th><th>Acciones</th></tr></thead>
@@ -112,7 +280,7 @@ async function loadPlanes() {
                     <td>${p.semestres_cursados}</td>
                     <td>${p.promedio}</td>
                     <td>${new Date(p.created_at).toLocaleDateString()}</td>
-                    <td><button class="btn-edit" onclick="verPlan(${p.id})">Ver</button></td>
+                    <td><button class="btn-edit" data-accion="ver-plan" data-id="${p.id}">Ver</button></td>
                 </tr>`;
             }
         } else {
@@ -121,14 +289,13 @@ async function loadPlanes() {
         html += '</tbody></table></div>';
         document.getElementById('content').innerHTML = html;
     } catch(e) {
-        document.getElementById('content').innerHTML = '<p>Error cargando planes</p>';
-        console.error(e);
+        mostrarErrorEnContenido('Error cargando planes', e);
     }
 }
 
 async function verPlan(planId) {
     try {
-        const res = await fetch(`${API_BASE}/admin/planes/${planId}`);
+        const res = await apiFetch(`/admin/planes/${planId}`);
         const plan = await res.json();
 
         const secundario = plan.programa_secundario
@@ -199,8 +366,7 @@ async function verPlan(planId) {
         document.body.appendChild(wrapper);
 
     } catch(e) {
-        alert('Error cargando el plan');
-        console.error(e);
+        avisarError('Error cargando el plan', e);
     }
 }
 
@@ -208,7 +374,7 @@ async function verPlan(planId) {
 
 async function loadProgramas() {
     try {
-        const res = await fetch(`${API_BASE}/admin/programas`);
+        const res = await apiFetch('/admin/programas');
         const data = await res.json();
         let html = `
             <button class="btn-primary" onclick="showProgramaModal()">+ Nuevo Programa</button>
@@ -222,7 +388,7 @@ async function loadProgramas() {
                     <td>${p.nombre}</td>
                     <td style="text-align:center;">${p.total_semestres}</td>
                     <td>${p.facultad}</td>
-                    <td><button class="btn-danger" onclick="deletePrograma('${p.codigo}')">Eliminar</button></td>
+                    <td><button class="btn-danger" data-accion="eliminar-programa" data-codigo="${p.codigo}">Eliminar</button></td>
                 </tr>`;
             }
         } else {
@@ -231,46 +397,46 @@ async function loadProgramas() {
         html += '</tbody></table></div>';
         document.getElementById('content').innerHTML = html;
     } catch(e) {
-        document.getElementById('content').innerHTML = '<p>Error cargando programas</p>';
-        console.error(e);
+        mostrarErrorEnContenido('Error cargando programas', e);
     }
 }
 
 async function deletePrograma(codigo) {
     if (!confirm(`¿Eliminar el programa ${codigo}?`)) return;
     try {
-        const res = await fetch(`${API_BASE}/admin/programas/${codigo}`, { method: 'DELETE' });
+        const res = await apiFetch(`/admin/programas/${encodeURIComponent(codigo)}`, { method: 'DELETE' });
         if (res.ok) { alert('Programa eliminado'); loadPage('programas'); }
         else alert('Error eliminando programa');
-    } catch(e) { alert('Error eliminando programa'); }
+    } catch(e) { avisarError('Error eliminando programa', e); }
 }
 
-function showProgramaModal() {
+async function showProgramaModal() {
     const codigo   = prompt('Codigo del programa (ej: IMEC):');   if (!codigo)   return;
     const nombre   = prompt('Nombre completo del programa:');      if (!nombre)   return;
     const facultad = prompt('Facultad:');                          if (!facultad) return;
 
-    fetch(`${API_BASE}/admin/programas`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            codigo: codigo.toUpperCase(),
-            nombre, facultad
-        })
-    })
-    .then(r => r.json())
-    .then(data => {
+    try {
+        const res = await apiFetch('/admin/programas', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                codigo: codigo.toUpperCase(),
+                nombre, facultad
+            })
+        });
+        const data = await res.json();
         if (data.id) { alert('Programa creado'); loadPage('programas'); }
-        else alert('Error: ' + JSON.stringify(data));
-    })
-    .catch(() => alert('Error al crear el programa'));
+        else alert('Error: ' + textoDeError(data, 'No se pudo crear el programa'));
+    } catch(e) {
+        avisarError('Error al crear el programa', e);
+    }
 }
 
 // -- Materias -------------------------------------------------
 
 async function loadMaterias() {
     try {
-        const res = await fetch(`${API_BASE}/admin/programas`);
+        const res = await apiFetch('/admin/programas');
         const data = await res.json();
 
         let options = '<option value="">-- Seleccione un programa --</option>';
@@ -293,8 +459,7 @@ async function loadMaterias() {
                 <p style="text-align:center;padding:40px;color:#666;">Seleccione un programa para ver su malla</p>
             </div>`;
     } catch(e) {
-        document.getElementById('content').innerHTML = '<p>Error cargando materias</p>';
-        console.error(e);
+        mostrarErrorEnContenido('Error cargando materias', e);
     }
 }
 
@@ -304,7 +469,7 @@ async function cargarMateriasPorPrograma() {
     currentProgramaId = codigo;
 
     try {
-        const res = await fetch(`${API_BASE}/admin/programas/${codigo}`);
+        const res = await apiFetch(`/admin/programas/${encodeURIComponent(codigo)}`);
         const programa = await res.json();
 
         // Agrupar por nivel
@@ -346,8 +511,8 @@ async function cargarMateriasPorPrograma() {
                                         : ''}
                                 </div>
                                 <div style="display:flex;flex-direction:column;gap:5px;margin-left:8px;">
-                                    <button onclick="mostrarModalEditarMateria('${mat.codigo}')" style="background:#4CAF50;color:white;border:none;border-radius:6px;padding:4px 8px;cursor:pointer;font-size:11px;">Editar</button>
-                                    <button onclick="eliminarMateria('${mat.codigo}')" style="background:#ff4444;color:white;border:none;border-radius:6px;padding:4px 8px;cursor:pointer;font-size:11px;">Eliminar</button>
+                                    <button data-accion="editar-materia" data-codigo="${mat.codigo}" style="background:#4CAF50;color:white;border:none;border-radius:6px;padding:4px 8px;cursor:pointer;font-size:11px;">Editar</button>
+                                    <button data-accion="eliminar-materia" data-codigo="${mat.codigo}" style="background:#ff4444;color:white;border:none;border-radius:6px;padding:4px 8px;cursor:pointer;font-size:11px;">Eliminar</button>
                                 </div>
                             </div>
                         </div>`;
@@ -359,8 +524,12 @@ async function cargarMateriasPorPrograma() {
 
         document.getElementById('materiasList').innerHTML = html;
     } catch(e) {
-        document.getElementById('materiasList').innerHTML = '<p style="color:red;">Error cargando malla</p>';
         console.error(e);
+        // Si fallo la autenticacion el aviso del token ya reemplazo #content,
+        // que contiene a #materiasList: no hay que escribir nada mas.
+        if (!(e && e.authFail)) {
+            document.getElementById('materiasList').innerHTML = '<p style="color:red;">Error cargando malla</p>';
+        }
     }
 }
 
@@ -371,12 +540,12 @@ function mostrarModalMateria() {
 
 async function mostrarModalEditarMateria(materiaCodigo) {
     try {
-        const res = await fetch(`${API_BASE}/admin/programas/${currentProgramaId}`);
+        const res = await apiFetch(`/admin/programas/${encodeURIComponent(currentProgramaId)}`);
         const prog = await res.json();
         const mat = prog.materias.find(m => m.codigo === materiaCodigo);
         if (!mat) { alert('Materia no encontrada'); return; }
         _abrirModalMateria('Editar Materia', mat, true);
-    } catch(e) { alert('Error cargando materia'); }
+    } catch(e) { avisarError('Error cargando materia', e); }
 }
 
 function _abrirModalMateria(titulo, mat, esEdicion) {
@@ -396,7 +565,7 @@ function _abrirModalMateria(titulo, mat, esEdicion) {
                     <label><input type="checkbox" id="mPractica" ${mat.es_practica ? 'checked' : ''}> Practica</label>
                 </div>
                 <div style="display:flex;gap:10px;margin-top:20px;">
-                    <button onclick="_guardarMateria('${mat.codigo || ''}', ${esEdicion})" style="flex:1;background:#1A1FC8;color:white;padding:10px;border:none;border-radius:6px;cursor:pointer;">Guardar</button>
+                    <button data-accion="guardar-materia" data-codigo="${mat.codigo || ''}" data-edicion="${esEdicion ? 'si' : 'no'}" style="flex:1;background:#1A1FC8;color:white;padding:10px;border:none;border-radius:6px;cursor:pointer;">Guardar</button>
                     <button onclick="document.getElementById('wrapperModalMateria').remove()" style="flex:1;background:#ccc;padding:10px;border:none;border-radius:6px;cursor:pointer;">Cancelar</button>
                 </div>
             </div>
@@ -423,8 +592,8 @@ async function _guardarMateria(codigoOriginal, esEdicion) {
     try {
         let res;
         if (esEdicion) {
-            res = await fetch(
-                `${API_BASE}/admin/programas/${encodeURIComponent(currentProgramaId)}/materias/${encodeURIComponent(codigoOriginal)}`,
+            res = await apiFetch(
+                `/admin/programas/${encodeURIComponent(currentProgramaId)}/materias/${encodeURIComponent(codigoOriginal)}`,
                 {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
@@ -432,7 +601,7 @@ async function _guardarMateria(codigoOriginal, esEdicion) {
                 }
             );
         } else {
-            res = await fetch(`${API_BASE}/admin/materias?programa_id=${currentProgramaId}`, {
+            res = await apiFetch(`/admin/materias?programa_id=${encodeURIComponent(currentProgramaId)}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body)
@@ -445,22 +614,22 @@ async function _guardarMateria(codigoOriginal, esEdicion) {
             cargarMateriasPorPrograma();
         } else {
             const err = await res.json();
-            alert('Error: ' + (err.detail || JSON.stringify(err)));
+            alert('Error: ' + textoDeError(err, 'No se pudo guardar la materia'));
         }
-    } catch(e) { alert('Error al guardar'); console.error(e); }
+    } catch(e) { avisarError('Error al guardar', e); }
 }
 
 async function eliminarMateria(materiaCodigo) {
     if (!confirm(`Quitar la materia ${materiaCodigo} solo de ${currentProgramaId}?`)) return;
     try {
-        const res = await fetch(
-            `${API_BASE}/admin/programas/${encodeURIComponent(currentProgramaId)}/materias/${encodeURIComponent(materiaCodigo)}`,
+        const res = await apiFetch(
+            `/admin/programas/${encodeURIComponent(currentProgramaId)}/materias/${encodeURIComponent(materiaCodigo)}`,
             { method: 'DELETE' }
         );
         if (res.ok) { alert('Materia quitada del programa'); cargarMateriasPorPrograma(); }
         else {
             const err = await res.json();
-            alert('Error: ' + (err.detail || 'No se pudo quitar la materia'));
+            alert('Error: ' + textoDeError(err, 'No se pudo quitar la materia'));
         }
-    } catch(e) { alert('Error al eliminar'); }
+    } catch(e) { avisarError('Error al eliminar', e); }
 }

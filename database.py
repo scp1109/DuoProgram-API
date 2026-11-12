@@ -1,6 +1,8 @@
 # database.py
 import os
+from contextlib import contextmanager
 import mysql.connector
+from fastapi import HTTPException
 from mysql.connector import Error
 from dotenv import load_dotenv
 
@@ -24,6 +26,42 @@ def get_db_connection():
     except Error as e:
         print(f"Error conectando a MySQL: {e}")
         return None
+
+
+@contextmanager
+def get_cursor(dictionary: bool = True, commit: bool = False):
+    """Abre conexion + cursor y garantiza que ambos se cierren.
+
+    Reemplaza el bloque repetido en cada endpoint (conectar, validar,
+    try/finally con cursor.close() y connection.close()), que se repetia
+    26 veces y en admin.py faltaba por completo, dejando conexiones
+    colgadas cuando un query fallaba.
+
+    Con commit=True hace commit al salir sin excepcion y rollback si la hay.
+
+    Uso:
+        with get_cursor(commit=True) as cursor:
+            cursor.execute("...", (valor,))
+    """
+    connection = get_db_connection()
+    if not connection:
+        raise HTTPException(status_code=503, detail="Error de conexion a la base de datos")
+
+    # dictionary=True hace que cada fila llegue como dict en vez de tupla,
+    # pero los stubs de mysql-connector no lo reflejan.
+    cursor = connection.cursor(dictionary=dictionary)  # type: ignore[call-overload]
+    try:
+        yield cursor
+        if commit:
+            connection.commit()
+    except Exception:
+        if commit:
+            connection.rollback()
+        raise
+    finally:
+        cursor.close()
+        connection.close()
+
 
 def init_db():
     # En Railway la BD ya existe y el usuario no tiene permisos para crearla.
