@@ -183,8 +183,39 @@ def _cargar_codigos_ingles() -> List[str]:
 
 
 # ---- Objetos públicos (misma interfaz que programas.py) ------
+#
+# TRAMPA DEL REBINDING - LEER ANTES DE TOCAR ESTO:
+# recargar_programas() hace `PROGRAMAS = _cargar_todos()`, es decir REBINDEA
+# el nombre PROGRAMAS de ESTE modulo a un diccionario nuevo. Cualquier otro
+# modulo que haya hecho `from data.db_programas import PROGRAMAS` se quedo con
+# una referencia al diccionario VIEJO en el momento del import, y nunca ve la
+# recarga: el admin edita la malla, se llama recargar_programas(), y el motor
+# sigue planificando con los datos anteriores hasta reiniciar el servidor.
+#
+# Por eso NADIE debe importar PROGRAMAS ni CODIGOS_INGLES por nombre.
+# Usar siempre los accesores get_programas() / get_codigos_ingles(), que leen
+# el global en el momento de la llamada y por tanto siempre devuelven el
+# estado vigente.
 PROGRAMAS: Dict[str, Programa] = _cargar_todos()
 CODIGOS_INGLES: List[str]      = _cargar_codigos_ingles()
+
+
+def get_programas() -> Dict[str, Programa]:
+    """Diccionario vigente {codigo_programa: Programa}.
+
+    Accesor obligatorio para el resto del proyecto: al resolver el global en
+    cada llamada, sobrevive al rebinding que hace recargar_programas().
+    """
+    return PROGRAMAS
+
+
+def get_codigos_ingles() -> List[str]:
+    """Lista vigente de codigos de ingles ordenada por nivel (indice 0 = nivel 1).
+
+    Mismo motivo que get_programas(): evita que un `from ... import
+    CODIGOS_INGLES` congele la lista vieja tras una recarga.
+    """
+    return CODIGOS_INGLES
 
 
 def get_programa(codigo: str) -> Optional[Programa]:
@@ -208,6 +239,10 @@ def recargar_programas() -> None:
     """Recarga los programas desde la BD.
     Se llama desde el router admin cada vez que se modifica la malla,
     para que el motor de planificacion vea los cambios sin reiniciar.
+
+    El rebinding de abajo solo surte efecto en los consumidores que leen via
+    get_programas()/get_codigos_ingles(); ver el comentario "TRAMPA DEL
+    REBINDING" mas arriba antes de volver a importar estos nombres directamente.
     """
     global PROGRAMAS, CODIGOS_INGLES
     PROGRAMAS      = _cargar_todos()

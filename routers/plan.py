@@ -9,10 +9,15 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 import json
+# Accesor en vez de `from data.db_programas import PROGRAMAS`: ese import ataba
+# el router al diccionario viejo y recargar_programas() no se veia aqui.
+from data.db_programas import get_programas
 from motor.planificador import (
-    ParametrosPlan, HomologacionExterna, generar_plan
+    ParametrosPlan, HomologacionExterna, generar_plan,
+    cargar_aprobadas, fusionar_grupos, calcular_electivas_cubiertas,
+    placeholders_necesarios, materias_pendientes,
 )
-from database import get_db_connection
+from database import get_cursor
 from routers.auth import extraer_token, verificar_token
 
 router = APIRouter(prefix="/plan", tags=["plan"])
@@ -33,10 +38,14 @@ class PlanRequest(BaseModel):
     promedio:                   float = 4.0
     semestres_cursados:         int = 0
     homologaciones_externas:    List[HomologacionRequest] = []
-    practica_unica:             bool = True
     practica_sola:              bool = False
-    # Matricula UTB permite desde 0 cr; el planificador no aplica este campo.
-    creditos_minimos:           int = 0
+    # Se eliminaron `practica_unica` y `creditos_minimos`: el primero no hacia
+    # nada (siempre se cursa una sola practica, la del principal) y el segundo
+    # nunca se aplico en el greedy.
+    # Un cliente Flutter ya desplegado puede seguir enviandolos en el JSON: por
+    # defecto Pydantic v2 usa extra="ignore", asi que los campos desconocidos se
+    # descartan en silencio y la peticion NO falla. No poner extra="forbid" aqui
+    # sin migrar antes a todos los clientes.
 
 
 class MateriaPlanResponse(BaseModel):
@@ -98,7 +107,6 @@ def planificar(
             )
             for h in request.homologaciones_externas
         ],
-        practica_unica = request.practica_unica,
         practica_sola  = request.practica_sola,
     )
 
@@ -141,55 +149,49 @@ def guardar_plan(
     token   = extraer_token(authorization)
     user_id = verificar_token(token)
 
-    connection = get_db_connection()
-    if not connection:
-        raise HTTPException(status_code=500, detail="Error de conexion")
+    # lastrowid solo es valido con el cursor todavia abierto, por eso el INSERT
+    # del historial y la lectura del id van DENTRO del bloque with.
+    with get_cursor(commit=True) as cursor:
+        try:
+            cursor.execute(
+                """
+                INSERT INTO planes (
+                    usuario_id, nombre, programa_principal, programa_secundario,
+                    semestres_cursados, promedio, materias_aprobadas,
+                    homologaciones, plan_generado, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    user_id,
+                    request.nombre,
+                    request.programa_principal,
+                    request.programa_secundario,
+                    request.semestres_cursados,
+                    request.promedio,
+                    json.dumps(request.materias_aprobadas),
+                    json.dumps(request.homologaciones),
+                    json.dumps(request.plan_generado),
+                    datetime.now(),
+                ),
+            )
 
-    cursor = connection.cursor(dictionary=True)  # type: ignore[call-overload]
+            # lastrowid puede ser None si el INSERT fallo silenciosamente
+            if cursor.lastrowid is None:
+                raise HTTPException(status_code=500, detail="Error al guardar el plan")
+            plan_id: int = int(cursor.lastrowid)
 
-    try:
-        cursor.execute(
-            """
-            INSERT INTO planes (
-                usuario_id, nombre, programa_principal, programa_secundario,
-                semestres_cursados, promedio, materias_aprobadas,
-                homologaciones, plan_generado, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                user_id,
-                request.nombre,
-                request.programa_principal,
-                request.programa_secundario,
-                request.semestres_cursados,
-                request.promedio,
-                json.dumps(request.materias_aprobadas),
-                json.dumps(request.homologaciones),
-                json.dumps(request.plan_generado),
-                datetime.now(),
-            ),
-        )
-        connection.commit()
+            cursor.execute(
+                "INSERT INTO historial (usuario_id, accion, detalles) VALUES (%s, %s, %s)",
+                (user_id, "generar_plan", f"Plan guardado ID: {plan_id}"),
+            )
 
-        # lastrowid puede ser None si el INSERT fallo silenciosamente
-        if cursor.lastrowid is None:
-            raise HTTPException(status_code=500, detail="Error al obtener ID del plan")
-        plan_id: int = int(cursor.lastrowid)
-
-        cursor.execute(
-            "INSERT INTO historial (usuario_id, accion, detalles) VALUES (%s, %s, %s)",
-            (user_id, "generar_plan", f"Plan guardado ID: {plan_id}"),
-        )
-        connection.commit()
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        connection.rollback()
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-    finally:
-        cursor.close()
-        connection.close()
+        except HTTPException:
+            raise
+        except Exception as e:
+            # El detalle real (tablas, SQL) se queda en el log del servidor;
+            # al cliente solo le llega un mensaje generico.
+            print(f"[plan] Error guardando plan del usuario {user_id}: {e}")
+            raise HTTPException(status_code=500, detail="Error al guardar el plan")
 
     return {"message": "Plan guardado exitosamente", "plan_id": plan_id}
 
@@ -201,151 +203,138 @@ def obtener_mis_planes(authorization: str = Header(...)):
     token   = extraer_token(authorization)
     user_id = verificar_token(token)
 
-    connection = get_db_connection()
-    if not connection:
-        raise HTTPException(status_code=500, detail="Error de conexion")
+    with get_cursor() as cursor:
+        try:
+            cursor.execute(
+                """
+                SELECT id, nombre, programa_principal, programa_secundario,
+                       semestres_cursados, promedio, plan_generado, created_at
+                FROM planes
+                WHERE usuario_id = %s
+                ORDER BY created_at DESC
+                """,
+                (user_id,),
+            )
+            rows: list[dict] = cursor.fetchall()  # type: ignore[assignment]
 
-    cursor = connection.cursor(dictionary=True)  # type: ignore[call-overload]
+            planes = []
+            for row in rows:
+                plan_generado = row["plan_generado"]
+                if isinstance(plan_generado, str):
+                    try:
+                        plan_generado = json.loads(plan_generado)
+                    except Exception:
+                        plan_generado = {}
 
-    try:
-        cursor.execute(
-            """
-            SELECT id, nombre, programa_principal, programa_secundario,
-                   semestres_cursados, promedio, plan_generado, created_at
-            FROM planes
-            WHERE usuario_id = %s
-            ORDER BY created_at DESC
-            """,
-            (user_id,),
-        )
-        rows: list[dict] = cursor.fetchall()  # type: ignore[assignment]
+                planes.append({
+                    "id":                  row["id"],
+                    "nombre":              row["nombre"],
+                    "programa_principal":  row["programa_principal"],
+                    "programa_secundario": row["programa_secundario"],
+                    "semestres_cursados":  row["semestres_cursados"],
+                    "promedio":            float(row["promedio"]) if row["promedio"] else 0,
+                    "plan_generado":       plan_generado,
+                    "created_at":          row["created_at"].isoformat() if row["created_at"] else None,
+                })
 
-        planes = []
-        for row in rows:
-            plan_generado = row["plan_generado"]
-            if isinstance(plan_generado, str):
-                try:
-                    plan_generado = json.loads(plan_generado)
-                except Exception:
-                    plan_generado = {}
-
-            planes.append({
-                "id":                  row["id"],
-                "nombre":              row["nombre"],
-                "programa_principal":  row["programa_principal"],
-                "programa_secundario": row["programa_secundario"],
-                "semestres_cursados":  row["semestres_cursados"],
-                "promedio":            float(row["promedio"]) if row["promedio"] else 0,
-                "plan_generado":       plan_generado,
-                "created_at":          row["created_at"].isoformat() if row["created_at"] else None,
-            })
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-    finally:
-        cursor.close()
-        connection.close()
+        except Exception as e:
+            # Nunca devolver str(e): filtra nombres de tablas y SQL al cliente.
+            print(f"[plan] Error listando planes del usuario {user_id}: {e}")
+            raise HTTPException(status_code=500, detail="Error al consultar los planes")
 
     return {"planes": planes}
 
 
 # -- Endpoint obtener un plan especifico ----------------------
 
-@router.get("/plan/{plan_id}")
+# El router ya tiene prefix="/plan", asi que la ruta canonica es "/{plan_id}"
+# -> GET /plan/{id}. La antigua "/plan/{plan_id}" producia /plan/plan/{id} por
+# el prefijo duplicado; se mantiene registrada y marcada como deprecated porque
+# el Flutter en produccion todavia llama a /plan/plan/$planId. Se puede borrar
+# cuando no queden clientes viejos desplegados.
+@router.get("/{plan_id}")
+@router.get("/plan/{plan_id}", deprecated=True)
 def obtener_plan(plan_id: int, authorization: str = Header(...)):
     token   = extraer_token(authorization)
     user_id = verificar_token(token)
 
-    connection = get_db_connection()
-    if not connection:
-        raise HTTPException(status_code=500, detail="Error de conexion")
+    with get_cursor() as cursor:
+        try:
+            cursor.execute(
+                """
+                SELECT id, programa_principal, programa_secundario,
+                       semestres_cursados, promedio, materias_aprobadas,
+                       homologaciones, plan_generado, created_at
+                FROM planes
+                WHERE id = %s AND usuario_id = %s
+                """,
+                (plan_id, user_id),
+            )
+            row: dict = cursor.fetchone()  # type: ignore[assignment]
 
-    cursor = connection.cursor(dictionary=True)  # type: ignore[call-overload]
+            if not row:
+                raise HTTPException(status_code=404, detail="Plan no encontrado")
 
-    try:
-        cursor.execute(
-            """
-            SELECT id, programa_principal, programa_secundario,
-                   semestres_cursados, promedio, materias_aprobadas,
-                   homologaciones, plan_generado, created_at
-            FROM planes
-            WHERE id = %s AND usuario_id = %s
-            """,
-            (plan_id, user_id),
-        )
-        row: dict = cursor.fetchone()  # type: ignore[assignment]
+            def parse_json(valor: object, default: object) -> object:
+                """Parsea JSON si es string; retorna el valor directo si ya es objeto."""
+                if isinstance(valor, str):
+                    try:
+                        return json.loads(valor)
+                    except Exception:
+                        return default
+                return valor if valor is not None else default
 
-        if not row:
-            raise HTTPException(status_code=404, detail="Plan no encontrado")
+            return {
+                "id":                  row["id"],
+                "programa_principal":  row["programa_principal"],
+                "programa_secundario": row["programa_secundario"],
+                "semestres_cursados":  row["semestres_cursados"],
+                "promedio":            float(row["promedio"]) if row["promedio"] else 0,
+                "created_at":          row["created_at"].isoformat() if row["created_at"] else None,
+                "plan_generado":       parse_json(row["plan_generado"], {}),
+                "materias_aprobadas":  parse_json(row["materias_aprobadas"], []),
+                "homologaciones":      parse_json(row["homologaciones"], []),
+            }
 
-        def parse_json(valor: object, default: object) -> object:
-            """Parsea JSON si es string; retorna el valor directo si ya es objeto."""
-            if isinstance(valor, str):
-                try:
-                    return json.loads(valor)
-                except Exception:
-                    return default
-            return valor if valor is not None else default
-
-        return {
-            "id":                  row["id"],
-            "programa_principal":  row["programa_principal"],
-            "programa_secundario": row["programa_secundario"],
-            "semestres_cursados":  row["semestres_cursados"],
-            "promedio":            float(row["promedio"]) if row["promedio"] else 0,
-            "created_at":          row["created_at"].isoformat() if row["created_at"] else None,
-            "plan_generado":       parse_json(row["plan_generado"], {}),
-            "materias_aprobadas":  parse_json(row["materias_aprobadas"], []),
-            "homologaciones":      parse_json(row["homologaciones"], []),
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-    finally:
-        cursor.close()
-        connection.close()
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"[plan] Error obteniendo plan {plan_id} del usuario {user_id}: {e}")
+            raise HTTPException(status_code=500, detail="Error al consultar el plan")
 
 
 # -- Endpoint eliminar plan -----------------------------------
 
-@router.delete("/plan/{plan_id}")
+# Mismo caso que en obtener_plan: "/{plan_id}" es la ruta correcta y
+# "/plan/{plan_id}" (-> /plan/plan/{id}) queda deprecada por compatibilidad
+# con los clientes Flutter ya desplegados.
+@router.delete("/{plan_id}")
+@router.delete("/plan/{plan_id}", deprecated=True)
 def eliminar_plan(plan_id: int, authorization: str = Header(...)):
     token   = extraer_token(authorization)
     user_id = verificar_token(token)
 
-    connection = get_db_connection()
-    if not connection:
-        raise HTTPException(status_code=500, detail="Error de conexion")
+    with get_cursor(commit=True) as cursor:
+        try:
+            cursor.execute(
+                "DELETE FROM planes WHERE id = %s AND usuario_id = %s",
+                (plan_id, user_id),
+            )
 
-    cursor = connection.cursor(dictionary=True)  # type: ignore[call-overload]
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Plan no encontrado")
 
-    try:
-        cursor.execute(
-            "DELETE FROM planes WHERE id = %s AND usuario_id = %s",
-            (plan_id, user_id),
-        )
-        connection.commit()
+            # Registrar en historial que el plan fue eliminado
+            cursor.execute(
+                "INSERT INTO historial (usuario_id, accion, detalles) VALUES (%s, %s, %s)",
+                (user_id, "plan_eliminado", f"Plan ID {plan_id} eliminado"),
+            )
 
-        if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Plan no encontrado")
-
-        # Registrar en historial que el plan fue eliminado
-        cursor.execute(
-            "INSERT INTO historial (usuario_id, accion, detalles) VALUES (%s, %s, %s)",
-            (user_id, "plan_eliminado", f"Plan ID {plan_id} eliminado"),
-        )
-        connection.commit()
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        connection.rollback()
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-    finally:
-        cursor.close()
-        connection.close()
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"[plan] Error eliminando plan {plan_id} del usuario {user_id}: {e}")
+            raise HTTPException(status_code=500, detail="Error al eliminar el plan")
 
     return {"message": "Plan eliminado exitosamente"}
 
@@ -353,16 +342,21 @@ def eliminar_plan(plan_id: int, authorization: str = Header(...)):
 # -- Endpoint diagnostico -------------------------------------
 
 @router.post("/diagnostico")
-def diagnostico(request: PlanRequest):
-    from data.db_programas import PROGRAMAS
-    from motor.planificador import (
-        cargar_aprobadas, fusionar_grupos,
-        calcular_electivas_cubiertas, placeholders_necesarios,
-        materias_pendientes, ParametrosPlan, HomologacionExterna,
-    )
+def diagnostico(
+    request: PlanRequest,
+    authorization: str = Header(...),
+):
+    # Este endpoint expone la malla completa y la logica interna del motor,
+    # asi que exige token igual que el resto del router. Antes era el unico
+    # sin autenticacion.
+    token = extraer_token(authorization)
+    verificar_token(token)
 
-    prog_p = PROGRAMAS.get(request.codigo_programa_principal)
-    prog_s = PROGRAMAS.get(request.codigo_programa_secundario) \
+    # get_programas() en vez de un import local de PROGRAMAS: el accesor lee el
+    # estado vigente tras recargar_programas(); el import lo congelaba.
+    programas = get_programas()
+    prog_p = programas.get(request.codigo_programa_principal)
+    prog_s = programas.get(request.codigo_programa_secundario) \
              if request.codigo_programa_secundario else None
 
     if not prog_p:
@@ -379,7 +373,6 @@ def diagnostico(request: PlanRequest):
             HomologacionExterna(h.codigo_materia, h.nombre_programa)
             for h in request.homologaciones_externas
         ],
-        practica_unica = request.practica_unica,
     )
 
     aprobadas        = cargar_aprobadas(params, prog_p, prog_s)

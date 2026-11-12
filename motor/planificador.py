@@ -3,11 +3,18 @@
 #  Algoritmo: Greedy semestre a semestre optimizado para 20 créditos
 # ============================================================
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Set, Tuple
-# PROGRAMAS y CODIGOS_INGLES ahora vienen de la BD en lugar de estar hardcodeados
+# Los programas y los codigos de ingles vienen de la BD, no hardcodeados.
+# OJO: se importan los ACCESORES, no los diccionarios/listas.
+# `from data.db_programas import PROGRAMAS` ataba este modulo al dict que
+# existia al momento del import; cuando el admin edita una malla y se llama a
+# recargar_programas(), esa funcion rebindea PROGRAMAS alla, pero aqui el
+# nombre seguia apuntando al dict viejo y el motor planificaba con datos
+# obsoletos hasta reiniciar el servidor. Los accesores resuelven el global en
+# cada llamada, asi que siempre leen el estado vigente.
 from data.db_programas import (
-    PROGRAMAS, CODIGOS_INGLES, get_codigos_practica,
+    get_programas, get_codigos_ingles, get_codigos_practica,
 )
 # Las clases y constructores vienen de modelos.py (sin datos hardcodeados)
 from data.modelos import Programa, Materia, GrupoElectiva
@@ -15,8 +22,6 @@ from data.modelos import Programa, Materia, GrupoElectiva
 # ── Constantes ───────────────────────────────────────────────
 CRED_MAX_ALTO = 20   # promedio >= 4.0
 CRED_MAX_BAJO = 18   # promedio <  4.0
-# Matricula UTB: minimo 0 cr por semestre. No se usa en el greedy actual.
-CRED_MIN      = 0
 
 
 # ── Modelos de entrada/salida ────────────────────────────────
@@ -36,7 +41,9 @@ class ParametrosPlan:
     promedio:                   float
     semestres_cursados:         int
     homologaciones_externas:    List[HomologacionExterna] = field(default_factory=list)
-    practica_unica:             bool = True
+    # Ya no existe `practica_unica`: el estudiante de doble programa cursa una
+    # sola practica, la del programa principal, siempre. El flag nunca hizo
+    # nada (la rama que lo consultaba era inalcanzable) y se elimino.
     practica_sola:              bool = False  # True = ultimo semestre solo con practica
 
     @property
@@ -65,8 +72,9 @@ class SemestrePlan:
 # ----- Función principal ---------------------------------------
 
 def generar_plan(params: ParametrosPlan) -> List[SemestrePlan]:
-    prog_p = PROGRAMAS.get(params.codigo_programa_principal)
-    prog_s = PROGRAMAS.get(params.codigo_programa_secundario) \
+    programas = get_programas()
+    prog_p = programas.get(params.codigo_programa_principal)
+    prog_s = programas.get(params.codigo_programa_secundario) \
              if params.codigo_programa_secundario else None
 
     if not prog_p:
@@ -108,7 +116,6 @@ def generar_plan(params: ParametrosPlan) -> List[SemestrePlan]:
         pendientes=pendientes,
         aprobadas=aprobadas,
         cred_max=params.max_creditos,
-        cred_min=CRED_MIN,
         semestre_inicial=params.semestres_cursados + 1,
         prog_p=prog_p,
         prog_s=prog_s,
@@ -127,9 +134,11 @@ def cargar_aprobadas(
 ) -> Set[str]:
     aprobadas: Set[str] = set(params.aprobadas)
 
+    # Se lee la lista vigente en cada llamada (ver comentario del import)
+    codigos_ingles = get_codigos_ingles()
     for n in params.niveles_ingles_homologados:
-        if 1 <= n <= len(CODIGOS_INGLES):
-            aprobadas.add(CODIGOS_INGLES[n - 1])
+        if 1 <= n <= len(codigos_ingles):
+            aprobadas.add(codigos_ingles[n - 1])
 
     for h in params.homologaciones_externas:
         aprobadas.add(h.codigo_materia)
@@ -140,7 +149,11 @@ def cargar_aprobadas(
                 if m.creditos == 0:
                     aprobadas.add(m.codigo)
 
-    if params.practica_unica and prog_s and params.codigo_programa_secundario:
+    # Practica unica: se cursa solo la practica del programa principal, asi que
+    # la del secundario se da por cumplida siempre. Antes esto colgaba del flag
+    # params.practica_unica, pero el flag no cambiaba nada (materias_pendientes
+    # descartaba la practica del secundario en todos los casos) y se elimino.
+    if prog_s and params.codigo_programa_secundario:
         codigos_practica = get_codigos_practica()
         cod_practica_s = codigos_practica.get(params.codigo_programa_secundario)
         if cod_practica_s:
@@ -251,6 +264,32 @@ def placeholders_necesarios(
 
 # --- PASO 5: Materias pendientes ---------------------------------
 
+def _fusionar_prerrequisitos(
+    pendientes: Dict[str, Materia],
+    cod: str,
+    mat: Materia,
+) -> None:
+    """Guarda la materia uniendo sus prerrequisitos con los ya registrados.
+
+    La misma materia puede exigir prerrequisitos distintos en cada programa:
+    CBAS_M05A exige M03A y M04A en CDAT/IMEC, pero solo M03A en IIND/ISCO.
+    Antes se asignaba directo por codigo y la ultima version leida pisaba a
+    la anterior; si ganaba la laxa, el plan colocaba una materia junto a su
+    propio prerrequisito y la matricula habria sido rechazada.
+
+    En doble programa hay que cumplir AMBOS planes de estudio, asi que se
+    toma la union: si cualquiera de los dos lo exige, es obligatorio.
+    """
+    previa = pendientes.get(cod)
+    if previa is None:
+        pendientes[cod] = mat
+        return
+    union = list(dict.fromkeys([*previa.prerrequisitos, *mat.prerrequisitos]))
+    if len(union) == len(previa.prerrequisitos):
+        return  # la version ya guardada era la mas estricta
+    pendientes[cod] = replace(previa, prerrequisitos=union)
+
+
 def materias_pendientes(
     prog_p: Programa,
     prog_s: Optional[Programa],
@@ -269,11 +308,12 @@ def materias_pendientes(
                 continue
             
             if mat.es_practica:
+                # Solo se cursa la practica del programa PRINCIPAL: en doble
+                # programa la UTB no exige dos practicas. La del secundario se
+                # marca como aprobada en cargar_aprobadas().
                 if prog.codigo != params.codigo_programa_principal:
                     continue
-                if params.practica_unica and prog.codigo != params.codigo_programa_principal:
-                    continue
-                pendientes[cod] = mat
+                _fusionar_prerrequisitos(pendientes, cod, mat)
                 continue
             
             if mat.es_proyecto:
@@ -281,10 +321,10 @@ def materias_pendientes(
                     if mat.proyecto_compartido in proyectos_agregados:
                         continue
                     proyectos_agregados.add(mat.proyecto_compartido)
-                pendientes[cod] = mat
+                _fusionar_prerrequisitos(pendientes, cod, mat)
                 continue
             
-            pendientes[cod] = mat
+            _fusionar_prerrequisitos(pendientes, cod, mat)
 
     for prog in [prog_p, prog_s]:
         if not prog:
@@ -292,12 +332,26 @@ def materias_pendientes(
         for ge in prog.grupos_electivas:
             for slot in ge.slot_codigos:
                 if slot in placeholders and slot not in pendientes:
+                    # Los slots de electiva PUEDEN traer prerrequisitos: el
+                    # slot de Humanidades II exige el de Humanidades I. Antes
+                    # el placeholder se creaba con la lista vacia y se perdia
+                    # esa regla, asi que el plan colocaba las dos el mismo
+                    # semestre. Se recupera la declaracion real del slot en
+                    # cualquiera de los dos programas.
+                    prereqs_slot: List[str] = []
+                    for prog_busca in (prog_p, prog_s):
+                        if not prog_busca:
+                            continue
+                        real = prog_busca.get_materia(slot)
+                        if real:
+                            prereqs_slot = list(dict.fromkeys(
+                                [*prereqs_slot, *real.prerrequisitos]))
                     pendientes[slot] = Materia(
                         codigo=slot,
                         nombre=ge.nombre,
                         creditos=ge.creditos_cu,
                         nivel=8,
-                        prerrequisitos=[],
+                        prerrequisitos=prereqs_slot,
                     )
 
     lista = list(pendientes.values())
@@ -306,10 +360,11 @@ def materias_pendientes(
     # Si el estudiante homologo hasta nivel N, la siguiente (N+1) debe
     # poder cursarse en el primer semestre disponible, no en el nivel
     # que le corresponde en la malla original.
-    codigos_ingles_set = set(CODIGOS_INGLES)
+    codigos_ingles = get_codigos_ingles()
+    codigos_ingles_set = set(codigos_ingles)
     ingles_pendientes = sorted(
         [m for m in lista if m.codigo in codigos_ingles_set],
-        key=lambda m: CODIGOS_INGLES.index(m.codigo),
+        key=lambda m: codigos_ingles.index(m.codigo),
     )
     if ingles_pendientes:
         from dataclasses import replace
@@ -332,7 +387,6 @@ def planificar_semestres_optimizado(
     pendientes: List[Materia],
     aprobadas: Set[str],
     cred_max: int,
-    cred_min: int,
     semestre_inicial: int,
     prog_p: Programa,
     prog_s: Optional[Programa],
@@ -348,6 +402,10 @@ def planificar_semestres_optimizado(
     vistas: Set[str] = set(aprobadas)
     plan: List[SemestrePlan] = []
     semestre = semestre_inicial
+    # Materias (no MateriaPlan) del ultimo semestre emitido. Hace falta para
+    # decidir si la cola se puede fusionar con la practica: MateriaPlan no
+    # lleva los prerrequisitos y sin ellos no se puede validar la fusion.
+    ultimo_grupo: List[Materia] = []
 
     # Separar práctica
     practica: Optional[Materia] = None
@@ -406,25 +464,20 @@ def planificar_semestres_optimizado(
                     semestre_mats.append(mat)
                     usados += mat.creditos
 
-        # FASE 2: Agregar UNA materia de 2 créditos si hay disponible
+        # FASE 3: Agregar UNA materia de 2 créditos si hay disponible
         if usados <= 18 and disponibles_2cr_sorted:
             mat_2cr = disponibles_2cr_sorted[0]
             if mat_2cr not in semestre_mats and usados + mat_2cr.creditos <= cred_max:
                 semestre_mats.append(mat_2cr)
                 usados += mat_2cr.creditos
 
-        # FASE 3: Si aun falta para llegar al maximo, agregar materias restantes.
-        # Las de 1cr se agregan PRIMERO para que no queden bloqueadas por las de 3cr.
+        # FASE 4: Si aun falta para llegar al maximo, rellenar con las materias
+        # grandes (3cr+) que quepan.
+        # Aqui habia una segunda pasada de materias de 1cr identica a la FASE 2;
+        # era codigo muerto: la FASE 2 solo deja fuera una materia de 1cr cuando
+        # usados ya llego a cred_max, y en ese caso este bloque no se ejecuta
+        # (ni la FASE 3 puede subir usados, porque exige usados + 2 <= cred_max).
         if usados < cred_max:
-            disponibles_1cr = [
-                m for m in disponibles if m.creditos == 1 and m not in semestre_mats
-            ]
-            for mat in disponibles_1cr:
-                if usados + mat.creditos <= cred_max:
-                    semestre_mats.append(mat)
-                    usados += mat.creditos
-
-            # Luego rellena con las demas (3cr+) que quepan
             disponibles_grandes = [
                 m for m in disponibles
                 if m.creditos != 1 and m not in semestre_mats
@@ -454,6 +507,8 @@ def planificar_semestres_optimizado(
             es_ultimo=False,
         ))
 
+        ultimo_grupo = list(semestre_mats)
+
         # Actualizar estado
         for mat in semestre_mats:
             vistas.add(mat.codigo)
@@ -470,6 +525,28 @@ def planificar_semestres_optimizado(
     if practica:
         materias_con_practica = [practica]
         creditos_practica = practica.creditos
+
+        # Fusionar la cola con la practica cuando cabe.
+        #
+        # El greedy vacia los pendientes y deja un ultimo semestre con las
+        # sobras; la practica caia en uno aparte. En 11 de las 12
+        # combinaciones de doble programa eso costaba un semestre entero
+        # que no hacia falta.
+        #
+        # No se fusiona si alguna materia de la cola es prerrequisito de la
+        # practica: las de IIND, IMEC e ISCO los tienen, y cursarlas a la
+        # vez daria un plan invalido.
+        if (not practica_sola and plan and ultimo_grupo):
+            creditos_cola = sum(m.creditos for m in ultimo_grupo)
+            codigos_cola = {m.codigo for m in ultimo_grupo}
+            bloquea = any(pre in codigos_cola for pre in practica.prerrequisitos)
+            if not bloquea and creditos_cola + practica.creditos <= cred_max:
+                # Se descarta el semestre de la cola y sus materias pasan a
+                # acompanar a la practica.
+                plan.pop()
+                semestre -= 1
+                materias_con_practica.extend(ultimo_grupo)
+                creditos_practica += creditos_cola
 
         if not practica_sola:
             # Meter TODAS las materias restantes que quepan junto con la practica.
