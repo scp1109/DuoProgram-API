@@ -360,8 +360,11 @@ def main():
             hechas = niveles(p, k)
             plan, fallos = revisar(p, None, hechas, 4.2, False)
             cr = sum(sem.total_creditos for sem in plan)
+            # hechas sale de niveles(), que solo toma obligatorias de esta
+            # malla: el diccionario las tiene todas (get_materia es Optional).
+            malla_p = obligatorias(PROGRAMAS[p])
             esperado_cr = PROGRAMAS[p].total_creditos() - sum(
-                PROGRAMAS[p].get_materia(c).creditos for c in hechas)
+                malla_p[c].creditos for c in hechas)
             if cr != esperado_cr:
                 fallos = ["plan %d cr, se esperaban %d" % (cr, esperado_cr)] + fallos
             registrar("%s solo, aprobado 1-%d" % (p, k), fallos)
