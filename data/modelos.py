@@ -18,6 +18,13 @@ class Materia:
     creditos: int
     nivel: int
     prerrequisitos: List[str] = field(default_factory=list)
+    # Caminos alternativos de prerrequisitos, uno por programa. Solo se llena
+    # cuando una materia compartida exige cosas que NO se contienen entre si
+    # segun el programa (Estructura de Datos: POO en ISCO, Programacion para
+    # Ciencia de Datos en CDAT). Si no esta vacia, basta con cumplir UNA de
+    # las listas; `prerrequisitos` guarda entonces la union, solo para los
+    # usos conservadores (orden de la cola, chequeos de seguridad).
+    alternativas: List[List[str]] = field(default_factory=list)
     es_proyecto: bool = False
     es_practica: bool = False
     proyecto_compartido: Optional[str] = None

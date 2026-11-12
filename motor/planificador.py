@@ -284,10 +284,34 @@ def _fusionar_prerrequisitos(
     if previa is None:
         pendientes[cod] = mat
         return
-    union = list(dict.fromkeys([*previa.prerrequisitos, *mat.prerrequisitos]))
-    if len(union) == len(previa.prerrequisitos):
-        return  # la version ya guardada era la mas estricta
-    pendientes[cod] = replace(previa, prerrequisitos=union)
+    prereqs, alternativas = combinar_prerrequisitos(
+        previa.prerrequisitos, mat.prerrequisitos)
+    pendientes[cod] = replace(
+        previa, prerrequisitos=prereqs, alternativas=alternativas)
+
+
+def combinar_prerrequisitos(
+    a: List[str], b: List[str],
+) -> Tuple[List[str], List[List[str]]]:
+    """Combina los prerrequisitos que dos programas exigen a la misma materia.
+
+    Devuelve (prerrequisitos, alternativas):
+
+    - Si una lista contiene a la otra, es la misma regla con un requisito de
+      mas en un programa (Calculo Vectorial: {Integral} frente a {Integral,
+      Algebra Lineal}). Manda la mas estricta y no hay alternativas.
+    - Si no se contienen, cada programa exige SU propio camino (Estructura de
+      Datos: POO en ISCO, Programacion para Ciencia de Datos en CDAT). Exigir
+      los dos, como hacia la union pura, bloqueaba a un estudiante que habia
+      cursado el camino de su programa. Se devuelven como alternativas y basta
+      con cumplir una.
+    """
+    sa, sb = set(a), set(b)
+    if sa <= sb:
+        return list(b), []
+    if sb <= sa:
+        return list(a), []
+    return list(dict.fromkeys([*a, *b])), [list(a), list(b)]
 
 
 def materias_pendientes(
@@ -338,20 +362,26 @@ def materias_pendientes(
                     # esa regla, asi que el plan colocaba las dos el mismo
                     # semestre. Se recupera la declaracion real del slot en
                     # cualquiera de los dos programas.
+                    # Misma regla que las materias normales: si ambos
+                    # programas declaran el slot, se combinan con
+                    # combinar_prerrequisitos.
                     prereqs_slot: List[str] = []
+                    alternativas_slot: List[List[str]] = []
                     for prog_busca in (prog_p, prog_s):
                         if not prog_busca:
                             continue
                         real = prog_busca.get_materia(slot)
                         if real:
-                            prereqs_slot = list(dict.fromkeys(
-                                [*prereqs_slot, *real.prerrequisitos]))
+                            prereqs_slot, alternativas_slot = \
+                                combinar_prerrequisitos(
+                                    prereqs_slot, real.prerrequisitos)
                     pendientes[slot] = Materia(
                         codigo=slot,
                         nombre=ge.nombre,
                         creditos=ge.creditos_cu,
                         nivel=8,
                         prerrequisitos=prereqs_slot,
+                        alternativas=alternativas_slot,
                     )
 
     lista = list(pendientes.values())
@@ -583,6 +613,10 @@ def planificar_semestres_optimizado(
 # --- Helpers ----------------------------------------------
 
 def prerequisitos_cumplidos(mat: Materia, aprobadas: Set[str]) -> bool:
+    # Con alternativas basta con completar UNO de los caminos.
+    if mat.alternativas:
+        return any(all(p in aprobadas for p in camino)
+                   for camino in mat.alternativas)
     return all(prereq in aprobadas for prereq in mat.prerrequisitos)
 
 
