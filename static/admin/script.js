@@ -31,6 +31,46 @@ function escaparHtml(texto) {
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+// Escapa todos los textos de una respuesta de la API, a cualquier
+// profundidad. Se aplica en apiFetch, en la frontera, en vez de escapar
+// cada interpolacion por separado: el panel arma su HTML con innerHTML y
+// template strings en decenas de sitios, y bastaba olvidar uno para que un
+// nombre de usuario como <img src=x onerror=...> ejecutara codigo en el
+// navegador del admin y le robara el token guardado en localStorage.
+// Escapando al recibir, todo dato que venga de la API es seguro por
+// construccion, incluidas las pantallas que se agreguen despues.
+// Seguro aqui porque el panel solo usa estos datos para pintar HTML; los
+// valores que se envian de vuelta se leen de los formularios, no de aqui.
+function escaparProfundo(valor) {
+    if (typeof valor === 'string') return escaparHtml(valor);
+    if (Array.isArray(valor)) return valor.map(escaparProfundo);
+    if (valor && typeof valor === 'object') {
+        const out = {};
+        for (const [k, v] of Object.entries(valor)) out[k] = escaparProfundo(v);
+        return out;
+    }
+    return valor;
+}
+
+// Texto legible para el `detail` de un error de la API. Un 422 de validacion
+// de FastAPI no trae un texto sino una lista de {loc, msg, type}; al
+// concatenarla salia "Error: [object Object]" y el admin no sabia que el
+// problema era, por ejemplo, un guion en el codigo.
+function textoDeError(cuerpo, porDefecto) {
+    const detalle = cuerpo && cuerpo.detail;
+    if (typeof detalle === 'string' && detalle) return detalle;
+    if (Array.isArray(detalle) && detalle.length) {
+        return detalle.map(e => {
+            const campo = (e.loc || []).filter(x => x !== 'body').join(' > ');
+            const msg = e.type === 'string_pattern_mismatch'
+                ? 'use solo MAYUSCULAS, numeros y guion bajo'
+                : e.msg;
+            return campo ? `${campo}: ${msg}` : msg;
+        }).join('\n');
+    }
+    return porDefecto;
+}
+
 function mostrarAvisoToken(motivo) {
     // Los modales se dibujan sobre #content: si quedan abiertos taparian el
     // aviso y el usuario no entenderia por que fallo la operacion.
@@ -71,7 +111,7 @@ function errorDeAuth(mensaje) {
 function mostrarErrorEnContenido(mensaje, e) {
     console.error(e);
     if (e && e.authFail) return; // el aviso del token ya esta en pantalla
-    document.getElementById('content').innerHTML = `<p>${mensaje}</p>`;
+    document.getElementById('content').innerHTML = `<p>${escaparHtml(mensaje)}</p>`;
 }
 
 function avisarError(mensaje, e) {
@@ -110,6 +150,9 @@ async function apiFetch(path, options = {}) {
         throw errorDeAuth(`HTTP ${res.status}`);
     }
 
+    // Toda lectura de JSON pasa por el escape (ver escaparProfundo).
+    const jsonOriginal = res.json.bind(res);
+    res.json = async () => escaparProfundo(await jsonOriginal());
     return res;
 }
 
@@ -124,6 +167,27 @@ function cerrarMenu() {
     document.getElementById('sidebar').classList.remove('open');
     document.getElementById('overlay').classList.remove('visible');
 }
+
+// Botones que actuan sobre un codigo (programa o materia). Antes eran
+// onclick="eliminarMateria('${codigo}')": el navegador decodifica las
+// entidades del atributo ANTES de ejecutar el JavaScript, asi que el escape
+// de escaparProfundo no servia ahi y un codigo como  x');alert(1);('
+// ejecutaba codigo en el navegador del admin. Con data-codigo el valor se
+// lee como texto y nunca se evalua. Un solo listener delegado cubre tambien
+// las filas que se pintan despues con innerHTML.
+const ACCIONES = {
+    'ver-plan':          b => verPlan(Number(b.dataset.id)),
+    'eliminar-programa': b => deletePrograma(b.dataset.codigo),
+    'editar-materia':    b => mostrarModalEditarMateria(b.dataset.codigo),
+    'eliminar-materia':  b => eliminarMateria(b.dataset.codigo),
+    'guardar-materia':   b => _guardarMateria(b.dataset.codigo, b.dataset.edicion === 'si'),
+};
+
+document.addEventListener('click', (e) => {
+    const boton = e.target.closest('[data-accion]');
+    const accion = boton && ACCIONES[boton.dataset.accion];
+    if (accion) accion(boton);
+});
 
 document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.nav-btn').forEach(btn => {
@@ -216,7 +280,7 @@ async function loadPlanes() {
                     <td>${p.semestres_cursados}</td>
                     <td>${p.promedio}</td>
                     <td>${new Date(p.created_at).toLocaleDateString()}</td>
-                    <td><button class="btn-edit" onclick="verPlan(${p.id})">Ver</button></td>
+                    <td><button class="btn-edit" data-accion="ver-plan" data-id="${p.id}">Ver</button></td>
                 </tr>`;
             }
         } else {
@@ -324,7 +388,7 @@ async function loadProgramas() {
                     <td>${p.nombre}</td>
                     <td style="text-align:center;">${p.total_semestres}</td>
                     <td>${p.facultad}</td>
-                    <td><button class="btn-danger" onclick="deletePrograma('${p.codigo}')">Eliminar</button></td>
+                    <td><button class="btn-danger" data-accion="eliminar-programa" data-codigo="${p.codigo}">Eliminar</button></td>
                 </tr>`;
             }
         } else {
@@ -362,7 +426,7 @@ async function showProgramaModal() {
         });
         const data = await res.json();
         if (data.id) { alert('Programa creado'); loadPage('programas'); }
-        else alert('Error: ' + (data.detail || JSON.stringify(data)));
+        else alert('Error: ' + textoDeError(data, 'No se pudo crear el programa'));
     } catch(e) {
         avisarError('Error al crear el programa', e);
     }
@@ -447,8 +511,8 @@ async function cargarMateriasPorPrograma() {
                                         : ''}
                                 </div>
                                 <div style="display:flex;flex-direction:column;gap:5px;margin-left:8px;">
-                                    <button onclick="mostrarModalEditarMateria('${mat.codigo}')" style="background:#4CAF50;color:white;border:none;border-radius:6px;padding:4px 8px;cursor:pointer;font-size:11px;">Editar</button>
-                                    <button onclick="eliminarMateria('${mat.codigo}')" style="background:#ff4444;color:white;border:none;border-radius:6px;padding:4px 8px;cursor:pointer;font-size:11px;">Eliminar</button>
+                                    <button data-accion="editar-materia" data-codigo="${mat.codigo}" style="background:#4CAF50;color:white;border:none;border-radius:6px;padding:4px 8px;cursor:pointer;font-size:11px;">Editar</button>
+                                    <button data-accion="eliminar-materia" data-codigo="${mat.codigo}" style="background:#ff4444;color:white;border:none;border-radius:6px;padding:4px 8px;cursor:pointer;font-size:11px;">Eliminar</button>
                                 </div>
                             </div>
                         </div>`;
@@ -501,7 +565,7 @@ function _abrirModalMateria(titulo, mat, esEdicion) {
                     <label><input type="checkbox" id="mPractica" ${mat.es_practica ? 'checked' : ''}> Practica</label>
                 </div>
                 <div style="display:flex;gap:10px;margin-top:20px;">
-                    <button onclick="_guardarMateria('${mat.codigo || ''}', ${esEdicion})" style="flex:1;background:#1A1FC8;color:white;padding:10px;border:none;border-radius:6px;cursor:pointer;">Guardar</button>
+                    <button data-accion="guardar-materia" data-codigo="${mat.codigo || ''}" data-edicion="${esEdicion ? 'si' : 'no'}" style="flex:1;background:#1A1FC8;color:white;padding:10px;border:none;border-radius:6px;cursor:pointer;">Guardar</button>
                     <button onclick="document.getElementById('wrapperModalMateria').remove()" style="flex:1;background:#ccc;padding:10px;border:none;border-radius:6px;cursor:pointer;">Cancelar</button>
                 </div>
             </div>
@@ -550,7 +614,7 @@ async function _guardarMateria(codigoOriginal, esEdicion) {
             cargarMateriasPorPrograma();
         } else {
             const err = await res.json();
-            alert('Error: ' + (err.detail || JSON.stringify(err)));
+            alert('Error: ' + textoDeError(err, 'No se pudo guardar la materia'));
         }
     } catch(e) { avisarError('Error al guardar', e); }
 }
@@ -565,7 +629,7 @@ async function eliminarMateria(materiaCodigo) {
         if (res.ok) { alert('Materia quitada del programa'); cargarMateriasPorPrograma(); }
         else {
             const err = await res.json();
-            alert('Error: ' + (err.detail || 'No se pudo quitar la materia'));
+            alert('Error: ' + textoDeError(err, 'No se pudo quitar la materia'));
         }
     } catch(e) { avisarError('Error al eliminar', e); }
 }

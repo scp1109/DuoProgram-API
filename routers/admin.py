@@ -19,8 +19,8 @@
 import json
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
-from typing import Any, Dict, List
+from pydantic import BaseModel, BeforeValidator, StringConstraints
+from typing import Annotated, Any, Dict, List
 from database import get_cursor
 from data.db_programas import recargar_programas
 from routers.auth import requiere_admin
@@ -51,39 +51,55 @@ def _error_generico(operacion: str, e: Exception, status_code: int = 400) -> HTT
 
 # -- Modelos de entrada ---------------------------------------
 
+# Los codigos terminan dentro de HTML y de URLs del dashboard. Se limitan a
+# mayusculas, digitos y guion bajo (los 201 codigos actuales de la BD ya
+# cumplen) para que un codigo como  x');alert(1);('  no llegue nunca a la BD.
+# Se normalizan (sin espacios, en mayusculas) antes de validar, y el largo
+# maximo es el de la columna, para responder 422 en vez de un error de MySQL.
+def _normalizar_codigo(v):
+    return v.strip().upper() if isinstance(v, str) else v
+
+_PATRON_CODIGO = r"^[A-Z0-9_]+$"
+CodigoPrograma = Annotated[str, BeforeValidator(_normalizar_codigo),
+                           StringConstraints(pattern=_PATRON_CODIGO, max_length=10)]
+CodigoMateria = Annotated[str, BeforeValidator(_normalizar_codigo),
+                          StringConstraints(pattern=_PATRON_CODIGO, max_length=20)]
+CodigoTipo = Annotated[str, BeforeValidator(_normalizar_codigo),
+                       StringConstraints(pattern=_PATRON_CODIGO, max_length=30)]
+
 class ProgramaCreate(BaseModel):
-    codigo: str
+    codigo: CodigoPrograma
     nombre: str
     facultad: str
 
 class MateriaCreate(BaseModel):
-    codigo: str
+    codigo: CodigoMateria
     nombre: str
     creditos: int
     nivel: int
     es_proyecto: bool = False
     es_practica: bool = False
-    prerrequisitos: List[str] = []
+    prerrequisitos: List[CodigoMateria] = []
 
 class MateriaUpdate(BaseModel):
-    codigo: str
+    codigo: CodigoMateria
     nombre: str
     creditos: int
     nivel: int
     es_proyecto: bool = False
     es_practica: bool = False
-    prerrequisitos: List[str] = []
+    prerrequisitos: List[CodigoMateria] = []
 
 class GrupoElectivaCreate(BaseModel):
-    tipo_codigo: str
+    tipo_codigo: CodigoTipo
     nombre: str
     cantidad: int
     creditos_cu: int
-    slot_codigos: List[str]
-    opciones: List[str] = []
+    slot_codigos: List[CodigoMateria]
+    opciones: List[CodigoMateria] = []
 
 class ProgramaCompleto(BaseModel):
-    codigo: str
+    codigo: CodigoPrograma
     nombre: str
     facultad: str
     materias: List[MateriaCreate]
