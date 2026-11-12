@@ -13,7 +13,7 @@ import json
 # el router al diccionario viejo y recargar_programas() no se veia aqui.
 from data.db_programas import get_programas
 from motor.planificador import (
-    ParametrosPlan, HomologacionExterna, generar_plan,
+    ParametrosPlan, HomologacionExterna, PlanIncompletoError, generar_plan,
     cargar_aprobadas, fusionar_grupos, calcular_electivas_cubiertas,
     placeholders_necesarios, materias_pendientes,
 )
@@ -110,7 +110,12 @@ def planificar(
         practica_sola  = request.practica_sola,
     )
 
-    plan = generar_plan(params)
+    try:
+        plan = generar_plan(params)
+    except PlanIncompletoError as e:
+        # Mejor un error claro que un plan al que le faltan materias.
+        print(f"[plan] Plan incompleto: {e}")
+        raise HTTPException(status_code=422, detail=str(e))
 
     semestres_response = [
         SemestrePlanResponse(
