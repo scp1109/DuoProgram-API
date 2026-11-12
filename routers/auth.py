@@ -31,6 +31,8 @@ if not SECRET_KEY:
 # No hay columna es_admin en la BD (se decidio no migrar), asi que la lista de
 # admins vive en la variable de entorno ADMIN_EMAILS, separada por comas.
 # Se normaliza a minusculas para comparar sin importar como se escribio el email.
+# Alta de un admin: primero se registra la cuenta y DESPUES se agrega su email
+# a ADMIN_EMAILS; un email de la lista no se puede registrar (ver registro).
 def _cargar_admin_emails() -> frozenset:
     crudo = os.getenv("ADMIN_EMAILS", "")
     return frozenset(
@@ -38,6 +40,10 @@ def _cargar_admin_emails() -> frozenset:
     )
 
 ADMIN_EMAILS = _cargar_admin_emails()
+
+
+def es_email_admin(email: str) -> bool:
+    return email.strip().lower() in ADMIN_EMAILS
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -84,6 +90,12 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
+
+# Hash de una contrasena aleatoria que nadie conoce. El login lo verifica
+# cuando el email no existe para tardar lo mismo que con un email real: sin
+# esto respondia en ~40 ms frente a ~260 ms (bcrypt) y el tiempo delataba
+# que cuentas existen, y de paso que emails de ADMIN_EMAILS no tienen cuenta.
+_HASH_RELLENO = hash_password(os.urandom(16).hex())
 
 def crear_token(user_id: int, email: str) -> str:
     # datetime.utcnow() quedo deprecado en Python 3.12 porque devuelve un
@@ -151,22 +163,33 @@ def requiere_admin(authorization: str = Header(default="")) -> int:
         )
 
     token = extraer_token(authorization)
-    payload = decodificar_token(token)
+    user_id = verificar_token(token)
 
-    email = str(payload.get("email") or "").strip().lower()
-    if not email or email not in ADMIN_EMAILS:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tiene permisos de administrador",
-        )
+    # El email se lee de la BD y no del claim del token. Confiar en el claim
+    # tenia dos problemas: un token seguia siendo admin despues de cambiar el
+    # email o de borrar al usuario (hasta expirar, 480 min), y un user_id que
+    # no existia pasaba igual si el email del claim estaba en la lista.
+    try:
+        with get_cursor() as cursor:
+            cursor.execute("SELECT email FROM usuarios WHERE id = %s", (user_id,))
+            fila = cursor.fetchone()
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[auth] Error verificando admin: {e}")
+        raise HTTPException(status_code=500, detail="Error interno del servidor")
 
-    sub = payload.get("sub")
-    if sub is None:
+    if fila is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token invalido o expirado",
         )
-    return int(sub)
+    if not es_email_admin(str(fila["email"])):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tiene permisos de administrador",
+        )
+    return user_id
 
 
 # -- Endpoints ------------------------------------------------
@@ -181,7 +204,15 @@ def registro(user: UserRegister):
     try:
         with get_cursor(commit=True) as cursor:
             cursor.execute("SELECT id FROM usuarios WHERE email = %s", (user.email,))
-            if cursor.fetchone():
+            # Nadie puede registrarse con un email de ADMIN_EMAILS. Como ser
+            # admin depende del email y el registro no verifica que el correo
+            # sea de quien lo escribe, el primero que registrara un email de
+            # la lista sin cuenta todavia se quedaba con el panel. Las cuentas
+            # admin se crean ANTES de agregarlas a ADMIN_EMAILS.
+            #
+            # Misma respuesta y mismo camino (despues del SELECT) que un email
+            # ya registrado: ni el texto ni el tiempo dicen que es de admin.
+            if cursor.fetchone() or es_email_admin(user.email):
                 raise HTTPException(status_code=400, detail="El email ya esta registrado")
 
             password_hash = hash_password(user.password)
@@ -233,6 +264,7 @@ def login(user: UserLogin):
             row: dict = cursor.fetchone()  # type: ignore[assignment]
 
             if row is None:
+                verify_password(user.password, _HASH_RELLENO)  # mismo tiempo
                 raise HTTPException(status_code=401, detail="Email o contrasena incorrectos")
 
             user_id: int                   = int(row["id"])
@@ -327,11 +359,21 @@ def actualizar_perfil(user: UserUpdate, authorization: str = Header(...)):
 
     try:
         with get_cursor(commit=True) as cursor:
+            # Mismo hueco que en el registro: cambiarse a un email de admin
+            # daria acceso al panel. Solo se permite si ya era el suyo, para
+            # que el propio admin pueda editar su nombre.
+            cursor.execute("SELECT email FROM usuarios WHERE id = %s", (user_id,))
+            actual = cursor.fetchone()
+            email_actual = str(actual["email"]).strip().lower() if actual else ""
+            admin_ajeno = (es_email_admin(user.email)
+                           and user.email.strip().lower() != email_actual)
+
             cursor.execute(
                 "SELECT id FROM usuarios WHERE email = %s AND id != %s",
                 (user.email, user_id),
             )
-            if cursor.fetchone():
+            # Misma respuesta que un email ocupado: no revela que es de admin.
+            if cursor.fetchone() or admin_ajeno:
                 raise HTTPException(status_code=400, detail="El email ya esta en uso")
 
             cursor.execute(
